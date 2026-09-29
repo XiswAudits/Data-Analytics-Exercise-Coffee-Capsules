@@ -100,12 +100,12 @@ div[data-testid="stSegmentedControl"] button {font-size: 14px !important;}
 .katex-display {overflow-x: auto; overflow-y: hidden; margin: 0.4em 0 !important;}
 .table-title {display: inline-block; font-size: 14px; font-weight: 600; color: #101828; margin: 12px 0 8px;}
 .overview-card {margin-top: 12px;}
-.overview-house {margin-top: 14px; padding-top: 12px; border-top: 1px solid #eef2f6;}
-.overview-house:first-of-type {margin-top: 12px;}
+.overview-grid {display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 10px;}
+.overview-house {margin: 0; padding: 0; border: 0;}
 .overview-kicker {font-size: 12px; font-weight: 600; color: #4b6380; letter-spacing: 0.01em; margin-bottom: 4px;}
-.overview-best {font-size: 14px; line-height: 1.5; color: #101828; margin: 0 0 8px;}
-.overview-moves {margin: 0; padding-left: 18px;}
-.overview-moves li {font-size: 13px; line-height: 1.5; color: #344054; margin: 0 0 6px;}
+.overview-best {font-size: 13px; line-height: 1.45; color: #101828; margin: 0 0 8px;}
+.overview-moves {margin: 0; padding-left: 16px;}
+.overview-moves li {font-size: 12.5px; line-height: 1.45; color: #344054; margin: 0 0 6px;}
 .overview-takeaway {margin: 14px 0 0; padding-top: 10px; border-top: 1px solid #eef2f6; font-size: 14px; line-height: 1.5; color: #101828;}
 [data-testid="stTooltipIcon"] svg {width: 14px; height: 14px; stroke: #98a2b3;}
 .table-caption {font-size: 13px; line-height: 1.45; color: #667085; margin: 2px 0 8px;}
@@ -113,7 +113,7 @@ div[data-testid="stSegmentedControl"] button {font-size: 14px !important;}
 .compare-k {font-size: 12px; line-height: 1.35; color: #667085; font-weight: 500;}
 .compare-v {margin-top: 4px; font-size: 16px; line-height: 1.3; letter-spacing: -0.2px; font-weight: 600; color: #101828;}
 @media (max-width: 1100px) {
-  .kpi-row, .formula-grid, .compare-grid {grid-template-columns: repeat(2, minmax(0, 1fr));}
+  .kpi-row, .formula-grid, .compare-grid, .overview-grid {grid-template-columns: repeat(2, minmax(0, 1fr));}
   .block-container {padding: 20px 16px 48px;}
   h1 {font-size: 30px;}
   .kpi-value {font-size: 22px;}
