@@ -98,6 +98,7 @@ div[data-testid="stSegmentedControl"] button {font-size: 14px !important;}
 [data-testid="stPlotlyChart"] {background: #fff; border: 1px solid #e5eaf0; border-radius: 16px; padding: 4px 4px 0; overflow: hidden;}
 .katex-display {overflow-x: auto; overflow-y: hidden; margin: 0.4em 0 !important;}
 .table-title {font-size: 14px; font-weight: 600; color: #101828; margin: 12px 0 8px;}
+.table-caption {font-size: 13px; line-height: 1.45; color: #667085; margin: 2px 0 8px;}
 .compare-grid {display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 12px;}
 .compare-k {font-size: 12px; line-height: 1.35; color: #667085; font-weight: 500;}
 .compare-v {margin-top: 4px; font-size: 16px; line-height: 1.3; letter-spacing: -0.2px; font-weight: 600; color: #101828;}
@@ -177,15 +178,18 @@ def demand_figure(households: list[dict]) -> go.Figure:
     return fig
 
 
-def render_table(frame: pd.DataFrame) -> None:
+def render_table(frame: pd.DataFrame, widths: list[str] | None = None) -> None:
     """Full-width table. Cells wrap, so the page does not grow a horizontal scrollbar."""
+    columns = "".join(f'<col style="width:{escape(width)}">' for width in widths) if widths else ""
     headers = "".join(f"<th>{escape(str(column))}</th>" for column in frame.columns)
     rows = []
     for record in frame.itertuples(index=False):
         cells = "".join(f"<td>{escape('' if value is None else str(value))}</td>" for value in record)
         rows.append(f"<tr>{cells}</tr>")
     st.markdown(
-        '<div class="table-wrap"><table class="grid"><thead><tr>'
+        '<div class="table-wrap"><table class="grid">'
+        + columns
+        + "<thead><tr>"
         + headers
         + "</tr></thead><tbody>"
         + "".join(rows)
@@ -204,13 +208,129 @@ def _pretty_constraint(text: str) -> str:
     return str(text).replace("<=", "≤").replace(">=", "≥").replace("max  ", "max ")
 
 
-def _short_menu(text: str) -> str:
-    parts = []
+def _hh_tag(label: str) -> str:
+    return "HH" + str(label).split()[-1]
+
+
+def _assignment_map(text: str) -> dict[str, str]:
+    found = {}
     for piece in str(text).split(", "):
         bits = piece.split()
         if len(bits) >= 4 and bits[0] == "Household" and bits[2] == "buys":
-            parts.append(f"H{bits[1]} {bits[-1]}")
-    return " · ".join(parts) if parts else str(text)
+            found[f"Household {bits[1]}"] = bits[-1]
+    return found
+
+
+def _shock_factor(shock: str) -> float:
+    raw = str(shock).replace("−", "-").replace("%", "").strip()
+    return 1.0 + float(raw) / 100.0
+
+
+def _switch_phrase(changes: list[tuple[str, str, str]]) -> str:
+    bits = []
+    for label, old, new in changes:
+        who = _hh_tag(label)
+        if new == "None":
+            bits.append(f"{who} drops out")
+        elif old == "None":
+            bits.append(f"{who} buys {new}")
+        else:
+            bits.append(f"{who} switches to {new}")
+    return ", ".join(bits)
+
+
+def _what_happens(row, detail: dict) -> str:
+    """One line on how this shocked line moved the shared menu.
+
+    Built from the base programme and the re-solved row. An assignment is
+    named only when it is not the base assignment.
+    """
+    base = detail["shared"]["best"]
+    label = str(row.Household)
+    tag = _hh_tag(label)
+    household = next(item for item in detail["households"] if item["label"] == label)
+    line = next((item for item in household["lines"] if item.get("given_m") is not None), household["lines"][0])
+    slope = float(line.get("given_m", 0.0))
+    icept = float(line.get("given_k", 0.0))
+    factor = _shock_factor(str(row.shock))
+    new_slope, new_icept = slope, icept
+    if "slope" in str(row.parameter):
+        new_slope *= factor
+    else:
+        new_icept *= factor
+    base_r = float(base["R"])
+    base_p = float(base["P"])
+    new_r = float(row.R_opt)
+    new_p = float(row.P_opt)
+    if new_r != new_r or new_p != new_p:
+        return f"{tag} line makes the programme infeasible"
+    base_level = slope * base_r + icept
+    new_level = new_slope * base_r + new_icept
+    rose = new_level > base_level + 1e-6
+    fell = new_level < base_level - 1e-6
+    base_assign = dict(base["assignment"])
+    new_assign = _assignment_map(str(row.assignment))
+    if not new_assign:
+        return f"{tag} line makes the programme infeasible"
+    product = base_assign[label]
+    new_product = new_assign.get(label, product)
+    is_cap = product != "Regular"
+    role = "cap" if is_cap else "floor"
+    prices_same = abs(new_r - base_r) < 0.005 and abs(new_p - base_p) < 0.005
+    changed = [
+        (name, base_assign[name], new_assign[name])
+        for name in base_assign
+        if new_assign.get(name) != base_assign[name]
+    ]
+    binding = any(label in name and "so that" in name for name in (base.get("tight") or []))
+    if prices_same and not changed:
+        if not binding:
+            return f"{tag} line not binding, no change"
+        return f"{tag} line moves, optimum unchanged"
+
+    if role == "floor" and rose and new_level > base_p + 0.02 and product == "Regular" and new_product == "Premium":
+        sentence = f"{tag} floor rises above the cap, so {tag} switches to Premium"
+        others = [item for item in changed if item[0] != label]
+        if others:
+            sentence += "; " + _switch_phrase(others)
+        if not prices_same:
+            sentence += f", P to {new_p:.2f}"
+        return sentence
+
+    if role == "cap" and not changed:
+        if rose and new_p > base_p + 0.02:
+            return f"{tag} Premium cap rises, P can go up to {new_p:.2f}"
+        if fell and new_p < base_p - 0.02:
+            if abs(new_r - base_r) > 0.02:
+                return f"{tag} Premium cap falls, R to {new_r:.2f}, P cut to {new_p:.2f}"
+            return f"{tag} Premium cap falls, P cut to {new_p:.2f}"
+
+    if product != "None" and new_product == "None" and abs(new_p - base_p) <= 0.05:
+        others = [item for item in changed if item[0] != label]
+        tail = "; " + _switch_phrase(others) if others else ""
+        return f"{tag} drops out, cheaper to lose it than cut P{tail}"
+
+    if role == "cap" and fell and new_product == product:
+        if abs(new_r - base_r) > 0.02 and abs(new_p - base_p) > 0.02:
+            move = "R and P cut"
+        elif abs(new_p - base_p) > 0.02:
+            move = f"P cut to {new_p:.2f}"
+        elif abs(new_r - base_r) > 0.02:
+            move = f"R cut to {new_r:.2f}"
+        else:
+            move = "prices barely move"
+        sentence = f"{tag} cap falls, {move}"
+        if changed:
+            sentence += "; " + _switch_phrase(changed)
+        return sentence
+
+    direction = "rises" if rose else "falls" if fell else "shifts"
+    sentence = f"{tag} {role} {direction}"
+    if not prices_same:
+        sentence += f", P to {new_p:.2f}"
+    if changed:
+        sentence += "; " + _switch_phrase(changed)
+    return sentence
 
 
 def _fmt2(value) -> str:
@@ -457,13 +577,20 @@ section_head(
 )
 if not line_shocks.empty:
     st.plotly_chart(structural_sensitivity_figure(line_shocks), width="stretch", config={"displayModeBar": False, "responsive": True})
+    st.markdown(
+        f'<p class="table-caption">Each line\'s slope or intercept moved by ±{SHOCK_PCT:.0%}. '
+        "The LP is re-solved; the revenue change is versus the base.</p>",
+        unsafe_allow_html=True,
+    )
     show = line_shocks[["Household", "parameter", "shock", "R_opt", "P_opt", "max_revenue", "delta_revenue", "assignment"]].copy()
+    show["What happens"] = [_what_happens(row, detail) for row in show.itertuples(index=False)]
+    show["Household"] = show["Household"].map(_hh_tag)
     show["parameter"] = show["parameter"].map(lambda text: _pretty_number_text(str(text).replace("threshold P = ", "threshold ")))
-    show["assignment"] = show["assignment"].map(_short_menu)
+    show = show.drop(columns=["assignment"])
     for column in ("R_opt", "P_opt", "max_revenue", "delta_revenue"):
         show[column] = show[column].map(_fmt2)
-    show.columns = ["Household", "Term", "Shock", "R", "P", "Revenue", "Δ revenue", "Assignment"]
-    render_table(show)
+    show.columns = ["Household", "Term", "Shock", "R", "P", "Revenue", "Δ revenue", "What happens"]
+    render_table(show, widths=["8%", "12%", "8%", "8%", "8%", "10%", "11%", "35%"])
 if not price_moves.empty:
     st.plotly_chart(price_move_figure(price_moves), width="stretch", config={"displayModeBar": False, "responsive": True})
 
