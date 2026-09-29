@@ -17,6 +17,7 @@ OLS line misclassified week 6 (R = 55, P = 80).
 
 from __future__ import annotations
 
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -830,12 +831,26 @@ def _shock_given_contour(households: list[dict], label: str, which: str, factor:
     return shocked
 
 
+OUTSIDE_PRICE_STATUS = "outside tested price range"
+OUTSIDE_PRICE_LABEL = "outside price range"
+
+
+def _inside_price_box(regular: float, premium: float, bounds: dict) -> bool:
+    """True when both prices sit inside the tested box, including the edges."""
+    return (
+        bounds["R_lower"] - _TOL <= regular <= bounds["R_upper"] + _TOL
+        and bounds["P_lower"] - _TOL <= premium <= bounds["P_upper"] + _TOL
+    )
+
+
 def structural_sensitivity(detail: dict, pct: float = 0.10) -> pd.DataFrame:
     """Re-solve after shocking each line, and after moving prices.
 
     OLS lines are shocked on intercept and on each slope. A fixed threshold,
     such as Household 2's P = 77.5, is shocked by moving that level ±pct.
     A hand-placed contour is shocked on its slope m and its intercept k.
+    A price move that leaves the tested box is not scored; its status is
+    "outside tested price range".
     """
     rows = []
     base = detail["shared"]["best"]
@@ -879,21 +894,30 @@ def structural_sensitivity(detail: dict, pct: float = 0.10) -> pd.DataFrame:
             for sign, factor in (("+", 1.0 + pct), ("−", 1.0 - pct)):
                 point = [own["R"], own["P"]]
                 point[index] = point[index] * factor
-                assessed = revenue_of(household, point[0], point[1])
-                rows.append(
-                    {
-                        "Household": household["label"],
-                        "kind": "price move",
-                        "parameter": price_name,
-                        "shock": f"{sign}{pct:.0%}",
-                        "R_opt": point[0],
-                        "P_opt": point[1],
-                        "max_revenue": assessed["revenue"],
-                        "delta_revenue": assessed["revenue"] - own["revenue"],
-                        "assignment": assessed["product"],
-                        "status": "evaluated",
-                    }
-                )
+                row = {
+                    "Household": household["label"],
+                    "kind": "price move",
+                    "parameter": price_name,
+                    "shock": f"{sign}{pct:.0%}",
+                    "R_opt": point[0],
+                    "P_opt": point[1],
+                }
+                if not _inside_price_box(point[0], point[1], bounds):
+                    row.update(
+                        max_revenue=float("nan"),
+                        delta_revenue=float("nan"),
+                        assignment="",
+                        status=OUTSIDE_PRICE_STATUS,
+                    )
+                else:
+                    assessed = revenue_of(household, point[0], point[1])
+                    row.update(
+                        max_revenue=assessed["revenue"],
+                        delta_revenue=assessed["revenue"] - own["revenue"],
+                        assignment=assessed["product"],
+                        status="evaluated",
+                    )
+                rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -1319,9 +1343,263 @@ def structural_sensitivity_figure(table: pd.DataFrame) -> go.Figure:
     return _bar_chart(coef, "Shared revenue when a line moves ±10%", "Change in shared revenue (€)")
 
 
+def _grouped_bar_center_offsets(n_series: int, bargap: float = 0.2) -> list[float]:
+    """Distance from the category index to each grouped bar's center.
+
+    Plotly's group layout uses this when bargroupgap is 0: the gap between
+    groups is `bargap`, and the bars in a group split the rest evenly.
+    """
+    if n_series <= 0:
+        return []
+    slot = (1.0 - bargap) / n_series
+    return [(2 * index + 1 - n_series) * slot / 2 for index in range(n_series)]
+
+
 def price_move_figure(table: pd.DataFrame) -> go.Figure:
-    moves = table[table["kind"] == "price move"]
-    return _bar_chart(moves, "Revenue when that household's price moves ±10%", "Change versus own optimum (€)")
+    moves = table[table["kind"] == "price move"].copy()
+    outside = (
+        moves["status"].eq(OUTSIDE_PRICE_STATUS)
+        if "status" in moves.columns
+        else pd.Series(False, index=moves.index)
+    )
+    plotted = moves.copy()
+    plotted.loc[outside, "delta_revenue"] = float("nan")
+    fig = _bar_chart(plotted, "Revenue when that household's price moves ±10%", "Change versus own optimum (€)")
+    # Pin the gap so the annotation sits on the empty bar's slot.
+    fig.update_layout(bargap=0.2, bargroupgap=0)
+    present = [name for name in LINE_COLOR if (moves["Household"] == name).any()]
+    if not present or not outside.any():
+        return fig
+    offsets = _grouped_bar_center_offsets(len(present))
+    order = [
+        _shock_tick(row.parameter, row.shock)
+        for row in moves[moves["Household"] == present[0]].itertuples()
+    ]
+    category_index = {label: index for index, label in enumerate(order)}
+    for row in moves.loc[outside].itertuples():
+        tick = _shock_tick(row.parameter, row.shock)
+        series = present.index(row.Household)
+        fig.add_annotation(
+            x=category_index[tick] + offsets[series],
+            y=0,
+            text=OUTSIDE_PRICE_LABEL,
+            showarrow=False,
+            font=dict(family=_CHART_FONT, size=10, color="#98a2b3"),
+            textangle=-90,
+            xanchor="center",
+            yanchor="top",
+            yshift=-6,
+        )
+    return fig
+
+
+def _euro(value: float) -> str:
+    return f"€{value:,.2f}"
+
+
+def _quantity_text(value: float) -> str:
+    if abs(value - round(value, 2)) < 1e-6:
+        return f"{value:.2f}"
+    return f"{value:.4f}"
+
+
+def _line_level(line: dict, regular: float) -> float | None:
+    terms = contour_terms(line)
+    if terms is None:
+        return None
+    slope, icept = terms
+    return slope * regular + icept
+
+
+def _side_clause(household: dict, regular: float, premium: float, product: str) -> str:
+    """Why this price pair selects this product, from the household's own lines."""
+    kinds = {line["kind"]: line for line in household["lines"]}
+    if product == "None" and "stop" in kinds:
+        line = kinds["stop"]
+        equation = format_display_equation(line, digits=2)
+        level = _line_level(line, regular)
+        if level is None:
+            return f"they are off the buying line {equation}"
+        return (
+            f"P = {_euro(premium)} is above the buying line {equation} "
+            f"(at this R the line allows P up to {_euro(level)})"
+        )
+    if product != "None" and "stop" in kinds and "switch" not in kinds:
+        line = kinds["stop"]
+        equation = format_display_equation(line, digits=2)
+        level = _line_level(line, regular)
+        if level is None:
+            return f"they are still on the buying side of {equation}"
+        return (
+            f"P = {_euro(premium)} is at or below the buying line {equation} "
+            f"(at this R the line allows P up to {_euro(level)})"
+        )
+    if "switch" in kinds and product in ("Regular", "Premium"):
+        line = kinds["switch"]
+        equation = format_display_equation(line, digits=2)
+        if line.get("fixed_threshold") is not None:
+            relation = "at or below" if product == "Premium" else "at or above"
+            return f"P = {_euro(premium)} is {relation} the switch {equation}"
+        level = _line_level(line, regular)
+        side = "Premium" if product == "Premium" else "Regular"
+        if level is None:
+            return f"the point is on the {side} side of {equation}"
+        return (
+            f"the point is on the {side} side of {equation} "
+            f"(at R = {_euro(regular)} the line is P = {_euro(level)})"
+        )
+    if product == "None":
+        return "they buy nothing at these prices"
+    return f"they buy {product}"
+
+
+def _revenue_clause(household: dict, product: str, regular: float, premium: float, revenue: float) -> str:
+    if product == "Regular":
+        quantity = household["d_regular"]
+        return f"d_Regular × R = {_quantity_text(quantity)} × {_euro(regular)} = {_euro(revenue)}"
+    if product == "Premium":
+        quantity = household["d_premium"]
+        return f"d_Premium × P = {_quantity_text(quantity)} × {_euro(premium)} = {_euro(revenue)}"
+    return f"Revenue is {_euro(revenue)} because they buy nothing"
+
+
+def _change_clause(delta: float) -> str:
+    if abs(delta) < 0.005:
+        return "Change €0.00."
+    if delta < 0:
+        return f"That is {_euro(abs(delta))} less than this household's own optimum."
+    return f"That is {_euro(delta)} more than this household's own optimum."
+
+
+def _outside_clause(regular: float, premium: float, bounds: dict) -> str:
+    reasons = []
+    if regular > bounds["R_upper"] + _TOL:
+        reasons.append(f"R = {_euro(regular)} is above the highest observed Regular price {_euro(bounds['R_upper'])}")
+    elif regular < bounds["R_lower"] - _TOL:
+        reasons.append(f"R = {_euro(regular)} is below the tested floor {_euro(bounds['R_lower'])}")
+    if premium > bounds["P_upper"] + _TOL:
+        reasons.append(f"P = {_euro(premium)} is above the highest observed Premium price {_euro(bounds['P_upper'])}")
+    elif premium < bounds["P_lower"] - _TOL:
+        reasons.append(f"P = {_euro(premium)} is below the tested floor {_euro(bounds['P_lower'])}")
+    if not reasons:
+        reasons.append("the moved price leaves the tested box")
+    return "; ".join(reasons)
+
+
+def _move_sentence(household: dict, own: dict, row, bounds: dict) -> str:
+    label = f"{row.parameter} {row.shock}"
+    regular = float(row.R_opt)
+    premium = float(row.P_opt)
+    if str(row.status) == OUTSIDE_PRICE_STATUS:
+        return (
+            f"{label} would set R = {_euro(regular)} and P = {_euro(premium)}. "
+            f"{_outside_clause(regular, premium, bounds)}. Revenue is not calculated."
+        )
+    product = str(row.assignment)
+    own_product = own["assignment"][household["label"]]
+    revenue = float(row.max_revenue)
+    delta = float(row.delta_revenue)
+    prices_same = abs(regular - float(own["R"])) < 0.005 and abs(premium - float(own["P"])) < 0.005
+    if prices_same:
+        body = (
+            f"{label} does not change the prices (R = {_euro(regular)}, P = {_euro(premium)}). "
+            f"They still buy {product}. {_revenue_clause(household, product, regular, premium, revenue)}."
+        )
+    elif product == own_product:
+        paid = "R" if product == "Regular" else "P" if product == "Premium" else ""
+        if paid and paid != str(row.parameter):
+            body = (
+                f"{label} sets R = {_euro(regular)} and P = {_euro(premium)}. "
+                f"Still buys {product}, because {_side_clause(household, regular, premium, product)}. "
+                f"{_revenue_clause(household, product, regular, premium, revenue)}. "
+                f"The moved price is not the one they pay."
+            )
+        else:
+            body = (
+                f"{label} sets R = {_euro(regular)} and P = {_euro(premium)}. "
+                f"Still buys {product}, because {_side_clause(household, regular, premium, product)}. "
+                f"{_revenue_clause(household, product, regular, premium, revenue)}."
+            )
+    else:
+        old = "nothing" if own_product == "None" else own_product
+        new = "nothing" if product == "None" else product
+        body = (
+            f"{label} sets R = {_euro(regular)} and P = {_euro(premium)}. "
+            f"Buys {new} instead of {old}, because {_side_clause(household, regular, premium, product)}. "
+            f"{_revenue_clause(household, product, regular, premium, revenue)}."
+        )
+    return f"{body} {_change_clause(delta)}"
+
+
+def _takeaway(moves: pd.DataFrame, bounds: dict) -> str:
+    evaluated = moves[moves["status"] != OUTSIDE_PRICE_STATUS] if "status" in moves.columns else moves
+    outside_n = int((moves["status"] == OUTSIDE_PRICE_STATUS).sum()) if "status" in moves.columns else 0
+    deltas = evaluated["delta_revenue"].astype(float) if not evaluated.empty else pd.Series(dtype=float)
+    scored = deltas.dropna()
+    if scored.empty and outside_n:
+        return (
+            f"Every move shown here leaves the observed price box "
+            f"(R up to {_euro(bounds['R_upper'])}, P up to {_euro(bounds['P_upper'])}), so none of them is scored."
+        )
+    no_gain = scored.empty or float(scored.max()) <= 0.005
+    if no_gain and outside_n:
+        return (
+            "No scored move beats that household's own prices, and a move outside the observed box "
+            f"(for example R above {_euro(bounds['R_upper'])}) is left blank rather than shown as a gain."
+        )
+    if no_gain:
+        return "No scored move beats that household's own prices."
+    worst = float(scored.max())
+    return f"The largest scored change versus that household's own optimum is {_euro(worst)}."
+
+
+def price_move_overview(detail: dict, moves: pd.DataFrame) -> str:
+    """Card under the price-move chart. Every figure comes from the solved rows."""
+    if moves.empty:
+        return ""
+    bounds = detail["bounds"]
+    blocks = []
+    labels = [row for row in moves["Household"].drop_duplicates()]
+    for label in labels:
+        household = next(item for item in detail["households"] if item["label"] == label)
+        own = next(
+            item["programme"]["best"]
+            for item in detail["per_household"]
+            if item["household"]["label"] == label
+        )
+        product = own["assignment"][label]
+        best = (
+            f"{escape(label)}'s own optimum is {escape(product)} at "
+            f"R = {_euro(own['R'])}, P = {_euro(own['P'])}. "
+            f"{escape(_revenue_clause(household, product, own['R'], own['P'], own['revenue']))}."
+        )
+        if own.get("flat_price"):
+            unused = "P" if abs(float(own["c"][1])) < 1e-12 else "R"
+            reported = own["P"] if unused == "P" else own["R"]
+            best += (
+                f" {unused} does not change this revenue, so any feasible {unused} earns the same. "
+                f"The reported vertex is {unused} = {_euro(reported)}."
+            )
+        items = []
+        part = moves[moves["Household"] == label]
+        for row in part.itertuples(index=False):
+            items.append(f"<li>{escape(_move_sentence(household, own, row, bounds))}</li>")
+        blocks.append(
+            '<div class="overview-house">'
+            f'<div class="overview-kicker">{escape(label)}</div>'
+            f'<p class="overview-best">{best}</p>'
+            f'<ul class="overview-moves">{"".join(items)}</ul>'
+            "</div>"
+        )
+    return (
+        '<div class="card overview-card">'
+        '<div class="card-title">Results overview</div>'
+        '<div class="card-sub">Each line is this household\'s own best prices, then one 10% move of R or of P. '
+        "Revenue is the quantity they buy times the price of that product.</div>"
+        + "".join(blocks)
+        + f'<p class="overview-takeaway"><strong>Takeaway.</strong> {escape(_takeaway(moves, bounds))}</p>'
+        "</div>"
+    )
 
 
 _MENU_LABEL = {
