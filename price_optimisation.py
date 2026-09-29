@@ -359,15 +359,11 @@ def load_problem(csv_path: str = DEFAULT_CSV, line_source: str = "ols") -> dict:
     regular = frame["P_Regular"].to_numpy(dtype=float)
     premium = frame["P_Premium"].to_numpy(dtype=float)
     prices = np.column_stack([regular, premium])
-    r_sd = float(np.std(regular, ddof=1))
-    p_sd = float(np.std(premium, ddof=1))
     bounds = {
         "R_lower": 0.0,
         "P_lower": 0.0,
         "R_upper": float(np.max(regular)),
         "P_upper": float(np.max(premium)),
-        "R_sd": r_sd,
-        "P_sd": p_sd,
     }
     households = []
     for prefix in discover_households(frame):
@@ -901,35 +897,6 @@ def structural_sensitivity(detail: dict, pct: float = 0.10) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def bound_sensitivity(detail: dict) -> pd.DataFrame:
-    """Re-solve the shared programme with a looser and a tighter price box."""
-    rows = []
-    base_bounds = detail["bounds"]
-    variants = [
-        ("Observed maximum", 0.0),
-        ("Observed maximum + 1 SD", 1.0),
-        ("Observed maximum + 2 SD", 2.0),
-    ]
-    for name, extra in variants:
-        bounds = dict(base_bounds)
-        bounds["R_upper"] = base_bounds["R_upper"] + extra * base_bounds["R_sd"]
-        bounds["P_upper"] = base_bounds["P_upper"] + extra * base_bounds["P_sd"]
-        solved = best_programme(detail["households"], bounds)
-        best = solved["best"]
-        rows.append(
-            {
-                "Price box": name,
-                "R_upper": bounds["R_upper"],
-                "P_upper": bounds["P_upper"],
-                "R_opt": best["R"] if best else float("nan"),
-                "P_opt": best["P"] if best else float("nan"),
-                "max_revenue": best["revenue"] if best else float("nan"),
-                "assignment": best["assignment_label"] if best else "infeasible",
-            }
-        )
-    return pd.DataFrame(rows)
-
-
 def regret_table(detail: dict, scenario: tuple[float, float]) -> pd.DataFrame:
     """Revenue and regret of the shared optimum, each household optimum, and the sliders."""
     shared = detail["shared"]["best"]
@@ -1355,35 +1322,6 @@ def structural_sensitivity_figure(table: pd.DataFrame) -> go.Figure:
 def price_move_figure(table: pd.DataFrame) -> go.Figure:
     moves = table[table["kind"] == "price move"]
     return _bar_chart(moves, "Revenue when that household's price moves ±10%", "Change versus own optimum (€)")
-
-
-def bound_sensitivity_figure(table: pd.DataFrame) -> go.Figure:
-    labels = [str(name).replace("Observed maximum", "Sample max") for name in table["Price box"]]
-    fig = go.Figure(
-        go.Bar(
-            x=labels,
-            y=table["max_revenue"],
-            marker_color="#1677ff",
-            text=[f"R {r:.2f}<br>P {p:.2f}" for r, p in zip(table["R_opt"], table["P_opt"])],
-            textposition="outside",
-            cliponaxis=False,
-            hovertemplate="%{x}<br>revenue %{y:.2f} €<extra></extra>",
-        )
-    )
-    apply_chart_layout(
-        fig,
-        height=440,
-        title="Shared revenue as the price box widens",
-        yaxis_title="Shared revenue (€)",
-        show_legend=False,
-        left=78,
-        right=24,
-        top=58,
-        bottom=64,
-    )
-    peak = float(np.nanmax(table["max_revenue"].to_numpy(dtype=float)))
-    fig.update_yaxes(range=[0, peak * 1.22], gridcolor="#e8edf3", zeroline=False)
-    return fig
 
 
 _MENU_LABEL = {
