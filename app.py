@@ -108,7 +108,6 @@ div[data-testid="stSegmentedControl"] {margin: 0 0 8px;}
 div[data-testid="stSegmentedControl"] button {font-size: 14px !important;}
 [data-testid="stPlotlyChart"] {background: #fff; border: 1px solid #e5eaf0; border-radius: 16px; padding: 4px 4px 0; overflow: hidden;}
 .katex-display {overflow-x: auto; overflow-y: hidden; margin: 0.4em 0 !important;}
-.table-title {display: inline-block; font-size: 14px; font-weight: 600; color: #101828; margin: 12px 0 8px;}
 .overview-card {margin-top: 12px;}
 .overview-grid {display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 10px;}
 .overview-house {margin: 0; padding: 0; border: 0;}
@@ -117,7 +116,6 @@ div[data-testid="stSegmentedControl"] button {font-size: 14px !important;}
 .overview-moves {margin: 0; padding-left: 16px;}
 .overview-moves li {font-size: 12.5px; line-height: 1.45; color: #344054; margin: 0 0 6px;}
 .overview-takeaway {margin: 14px 0 0; padding-top: 10px; border-top: 1px solid #eef2f6; font-size: 14px; line-height: 1.5; color: #101828;}
-[data-testid="stTooltipIcon"] svg {width: 14px; height: 14px; stroke: #98a2b3;}
 @media (max-width: 1100px) {
   .kpi-row, .formula-grid, .overview-grid {grid-template-columns: repeat(2, minmax(0, 1fr));}
   .block-container {padding: 20px 16px 48px;}
@@ -250,17 +248,12 @@ REGRET_TIP = (
 
 
 def info_title(title: str, tip: str) -> None:
-    """Title row with Streamlit's small hover tooltip, in the same type as the tables."""
-    st.markdown(
-        f'<div class="table-title">{escape(title)}</div>',
-        unsafe_allow_html=True,
-        help=tip,
-        width="content",
-    )
+    """Heading with Streamlit's built-in question-mark tooltip."""
+    st.subheader(title, help=tip)
 
 
 def chart_with_tip(fig: go.Figure, title: str, tip: str) -> None:
-    """Show a chart whose title sits beside the tooltip, not inside the plot."""
+    """Chart under a native heading; the tooltip is Streamlit's help icon."""
     fig.update_layout(title=None, margin_t=16)
     info_title(title, tip)
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "responsive": True})
