@@ -121,6 +121,40 @@ def _halfspace(line: dict, side: str) -> tuple[np.ndarray, float]:
     raise ValueError(side)
 
 
+def contour_terms(line: dict) -> tuple[float, float] | None:
+    """Slope and intercept of the 0.5 contour, written P = slope·R + intercept."""
+    if line.get("fixed_threshold") is not None:
+        return 0.0, float(line["fixed_threshold"])
+    if abs(line["b_P"]) < 1e-12:
+        return None
+    slope = -line["b_R"] / line["b_P"]
+    icept = (0.5 - line["intercept"]) / line["b_P"]
+    return float(slope), float(icept)
+
+
+def ols_switch_line(frame: pd.DataFrame, household: dict) -> dict | None:
+    """OLS linear probability model on weeks the household bought something.
+
+    Premium is 1 and Regular is 0. Households that replace this fit with a
+    threshold still get the OLS line here, so the page can show what it missed.
+    """
+    prefix = household["prefix"]
+    regular_qty = frame[f"{prefix}_Regular"].to_numpy(dtype=float)
+    premium_qty = frame[f"{prefix}_Premium"].to_numpy(dtype=float)
+    bought = (regular_qty > 0) | (premium_qty > 0)
+    if int(bought.sum()) < 2 or not (regular_qty[bought] > 0).any() or not (premium_qty[bought] > 0).any():
+        return None
+    prices = np.column_stack([
+        frame.loc[bought, "P_Regular"].to_numpy(dtype=float),
+        frame.loc[bought, "P_Premium"].to_numpy(dtype=float),
+    ])
+    target = (premium_qty[bought] > 0).astype(float)
+    line = _fit_lpm(prices, target)
+    line["kind"] = "switch"
+    line["equation"] = line_equation(line)
+    return line
+
+
 def horizontal_switch(level: float) -> dict:
     """Switching line P = `level`. Premium when P is at or below it, Regular above."""
     line = {
