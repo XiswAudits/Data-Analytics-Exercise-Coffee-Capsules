@@ -103,6 +103,12 @@ def line_equation(line: dict) -> str:
 def format_display_equation(line: dict, digits: int = 2, compact: bool = True) -> str:
     """Contour for a legend or card. Two decimals read as P = 1.60R − 9.26."""
     gap = "" if compact else " "
+    if line.get("given_m") is not None and digits == 2:
+        # Keep the digits that identify a hand-placed line, such as 0.6667 and -0.0502.
+        slope = float(line["given_m"])
+        icept = float(line["given_k"])
+        sign = "−" if icept < 0 else "+"
+        return f"P = {slope:.4f}{gap}R {sign} {abs(icept):.2f}"
     if line.get("fixed_threshold") is not None:
         return f"P = {float(line['fixed_threshold']):.{digits}f}"
     intercept, b_r, b_p = line["intercept"], line["b_R"], line["b_P"]
@@ -140,6 +146,15 @@ def contour_terms(line: dict) -> tuple[float, float] | None:
     return float(slope), float(icept)
 
 
+# Hand-placed separating lines, written P = m R + k.
+# Premium (or still buying) on or below the line. Not estimated from the table.
+CLASSMATE_CONTOURS = {
+    "Household 1": (0.6667, 40.00, "switch"),
+    "Household 2": (0.1667, 67.50, "switch"),
+    "Household 3": (-0.0502, 87.38, "stop"),
+}
+
+
 def contour_line(slope: float, intercept: float, kind: str) -> dict:
     """Line P = slope·R + intercept, with Premium (or still buying) on or below it.
 
@@ -152,6 +167,8 @@ def contour_line(slope: float, intercept: float, kind: str) -> dict:
         "b_P": -1.0,
         "r_squared": float("nan"),
         "kind": kind,
+        "given_m": float(slope),
+        "given_k": float(intercept),
     }
     line["equation"] = line_equation(line)
     return line
@@ -298,8 +315,46 @@ def inequality_text(line: dict, side: str) -> str:
     return f"P {op} {slope:.4f} R {sign} {abs(icept):.4f}"
 
 
-def load_problem(csv_path: str = DEFAULT_CSV) -> dict:
-    """Fit one line per household and the fixed quantities, plus price bounds."""
+def _ols_lines(label: str, prices: np.ndarray, bought_reg: np.ndarray, bought_prem: np.ndarray) -> list[dict]:
+    """OLS switching line, plus a stop line when the household sometimes buys nothing.
+
+    Household 2's switch is the horizontal threshold instead of the OLS contour.
+    """
+    bought = bought_reg | bought_prem
+    lines = []
+    if bought.any() and (~bought).any():
+        stop = _fit_lpm(prices, bought.astype(float))
+        stop["kind"] = "stop"
+        stop["equation"] = line_equation(stop)
+        lines.append(stop)
+    if int(bought.sum()) >= 2 and bought_reg[bought].any() and bought_prem[bought].any():
+        if label == "Household 2":
+            switch = horizontal_switch(HH2_SWITCH_THRESHOLD)
+        else:
+            switch = _fit_lpm(prices[bought], bought_prem[bought].astype(float))
+            switch["kind"] = "switch"
+            switch["equation"] = line_equation(switch)
+        lines.append(switch)
+    return lines
+
+
+def _classmate_lines(label: str) -> list[dict]:
+    """The given separating line for this household. Premium, or still buying, is on or below it."""
+    if label not in CLASSMATE_CONTOURS:
+        raise KeyError(f"No classmate line for {label}")
+    slope, icept, kind = CLASSMATE_CONTOURS[label]
+    return [contour_line(slope, icept, kind)]
+
+
+def load_problem(csv_path: str = DEFAULT_CSV, line_source: str = "ols") -> dict:
+    """Fixed quantities and one line per household, plus price bounds.
+
+    `line_source="ols"` fits the lines (Household 2 uses P = 77.5).
+    `line_source="classmate"` uses the hand-placed contours in `CLASSMATE_CONTOURS`.
+    Quantities and bounds always come from the CSV.
+    """
+    if line_source not in ("ols", "classmate"):
+        raise ValueError(f"Unknown line_source {line_source!r}")
     frame = pd.read_csv(csv_path)
     regular = frame["P_Regular"].to_numpy(dtype=float)
     premium = frame["P_Premium"].to_numpy(dtype=float)
@@ -324,22 +379,10 @@ def load_problem(csv_path: str = DEFAULT_CSV) -> dict:
         bought = bought_reg | bought_prem
         d_regular = float(reg_qty[bought_reg].mean()) if bought_reg.any() else 0.0
         d_premium = float(prem_qty[bought_prem].mean()) if bought_prem.any() else 0.0
-        lines = []
-        if bought.any() and (~bought).any():
-            stop = _fit_lpm(prices, bought.astype(float))
-            stop["kind"] = "stop"
-            stop["equation"] = line_equation(stop)
-            lines.append(stop)
-        buyers = bought
-        if buyers.sum() >= 2 and bought_reg[buyers].any() and bought_prem[buyers].any():
-            if label == "Household 2":
-                switch = horizontal_switch(HH2_SWITCH_THRESHOLD)
-            else:
-                switch_target = bought_prem[buyers].astype(float)
-                switch = _fit_lpm(prices[buyers], switch_target)
-                switch["kind"] = "switch"
-                switch["equation"] = line_equation(switch)
-            lines.append(switch)
+        if line_source == "classmate":
+            lines = _classmate_lines(label)
+        else:
+            lines = _ols_lines(label, prices, bought_reg, bought_prem)
         predicted = [
             predict_product({"lines": lines, "only_product": "Premium" if not bought_reg.any() else None}, r, p)
             for r, p in zip(regular, premium)
@@ -360,7 +403,7 @@ def load_problem(csv_path: str = DEFAULT_CSV) -> dict:
                 "accuracy": accuracy,
             }
         )
-    return {"households": households, "bounds": bounds, "frame": frame}
+    return {"households": households, "bounds": bounds, "frame": frame, "line_source": line_source}
 
 
 def product_choices(household: dict) -> list[str]:
@@ -701,9 +744,12 @@ def household_equations(household: dict) -> list[str]:
     return text
 
 
-def optimise_prices_detailed(csv_path: str = DEFAULT_CSV) -> dict:
-    """Shared menu plus one programme per household, and every assignment tried."""
-    problem = load_problem(csv_path)
+def optimise_prices_detailed(csv_path: str = DEFAULT_CSV, line_source: str = "ols") -> dict:
+    """Shared menu plus one programme per household, and every assignment tried.
+
+    `line_source` defaults to the OLS lines, which is what the root app shows.
+    """
+    problem = load_problem(csv_path, line_source=line_source)
     households = problem["households"]
     bounds = problem["bounds"]
     shared = best_programme(households, bounds)
@@ -718,6 +764,7 @@ def optimise_prices_detailed(csv_path: str = DEFAULT_CSV) -> dict:
         "shared": shared,
         "per_household": per_household,
         "formulation": format_programme(shared["best"], households) if shared["best"] else "No feasible shared programme.",
+        "line_source": line_source,
     }
 
 
@@ -771,11 +818,28 @@ def _sensitivity_row(household_label: str, parameter: str, shock: str, best: dic
     }
 
 
+def _shock_given_contour(households: list[dict], label: str, which: str, factor: float) -> list[dict]:
+    """Move the slope m or the intercept k of one household's given line."""
+    shocked = []
+    for household in households:
+        lines = []
+        for line in household["lines"]:
+            if household["label"] == label and "given_m" in line:
+                slope = float(line["given_m"]) * (factor if which == "m" else 1.0)
+                icept = float(line["given_k"]) * (factor if which == "k" else 1.0)
+                lines.append(contour_line(slope, icept, line["kind"]))
+            else:
+                lines.append(dict(line))
+        shocked.append({**household, "lines": lines})
+    return shocked
+
+
 def structural_sensitivity(detail: dict, pct: float = 0.10) -> pd.DataFrame:
-    """Re-solve after shocking each fitted line, and after moving prices.
+    """Re-solve after shocking each line, and after moving prices.
 
     OLS lines are shocked on intercept and on each slope. A fixed threshold,
     such as Household 2's P = 77.5, is shocked by moving that level ±pct.
+    A hand-placed contour is shocked on its slope m and its intercept k.
     """
     rows = []
     base = detail["shared"]["best"]
@@ -783,7 +847,17 @@ def structural_sensitivity(detail: dict, pct: float = 0.10) -> pd.DataFrame:
     fields = (("intercept", "intercept"), ("b_R", "slope on R"), ("b_P", "slope on P"))
     for household in detail["households"]:
         fixed = [line for line in household["lines"] if "fixed_threshold" in line]
-        fitted = [line for line in household["lines"] if "fixed_threshold" not in line]
+        given = [line for line in household["lines"] if "given_m" in line]
+        fitted = [
+            line for line in household["lines"]
+            if "fixed_threshold" not in line and "given_m" not in line
+        ]
+        if given:
+            for which, pretty in (("m", "slope m"), ("k", "intercept k")):
+                for sign, factor in (("+", 1.0 + pct), ("−", 1.0 - pct)):
+                    shocked = _shock_given_contour(detail["households"], household["label"], which, factor)
+                    solved = best_programme(shocked, bounds)
+                    rows.append(_sensitivity_row(household["label"], pretty, f"{sign}{pct:.0%}", solved["best"], base["revenue"]))
         if fitted:
             for field, pretty in fields:
                 for sign, factor in (("+", 1.0 + pct), ("−", 1.0 - pct)):
