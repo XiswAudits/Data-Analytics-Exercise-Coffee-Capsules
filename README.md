@@ -1,6 +1,6 @@
 # Coffee Capsule Pricing Model
 
-A reproducible pricing-analysis project using the 11-week, three-household dataset supplied for the exercise.
+Interactive Streamlit app for the 11-week, three-household coffee-capsule exercise. The published model is the whiteboard linear programme from [Coffee-Capsules-Experiment](https://github.com/XiswAudits/Coffee-Capsules-Experiment) (`e1abc10`).
 
 ## Run locally
 
@@ -9,22 +9,82 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The dashboard includes Model Explanation, Demand Estimates, Feasible Region, Sensitivity, Scenarios & Regret, and Source Data.
+`analysis/pricing_optimization/app.py` is a compatibility entry point for the existing Streamlit Community Cloud path. It runs the same root `app.py`.
 
-## Dataset and method
+The price calculation can also be checked without the dashboard:
 
-`data/coffee_capsules.csv` transcribes all 11 weeks from the supplied table. Zero purchases are preserved. Six household/product demand equations are fitted with OLS using own price. If an estimated own-price slope is positive, the model uses a zero slope for that equation; both raw and adjusted slopes are reported.
+```bash
+python price_optimisation.py
+```
 
-Price bounds are derived from observed minimum and maximum prices. A linear price-ladder constraint requires Premium − Regular to be at least the smallest observed gap.
+## Revenue-maximising prices
 
-The original price × demand objective is nonlinear. The model samples product revenue curves on a fine grid and solves a piecewise-linear convex-hull approximation with `scipy.optimize.linprog`. This is an LP approximation, not an exact solution to the original nonlinear problem. Reported revenue is re-evaluated at the interpolated prices.
+The question is which Premium price `P` and Regular price `R` maximise profit. Capsule costs are not in the data, so the programme maximises **revenue**. The only decision variables are the two prices. Each household buys a fixed quantity of the product it chooses, so revenue is linear in those prices.
 
-Sensitivity perturbs fitted demand intercepts by ±10%. Low/Base/High scenarios scale demand by −10%, 0%, and +10%. Strategies are ODS (optimized prices), BS1 (observed mean prices), BS2 (observed 25th percentile Regular / 75th percentile Premium), and BS3 (the reverse). Payoff tables compare revenues; regret is scenario-best revenue minus strategy revenue.
+The calculation lives in `price_optimisation.py` and is shown in the root `app.py` under **Revenue-maximising prices** (tabs **Shared prices** and **Per household**).
 
-## Revenue vs. profit
+The earlier successive linear programme of quadratic OLS demand has been retired. The app now has this one model.
 
-No unit costs were supplied, so the objective is **revenue maximization**, not profit maximization. With unit costs, contribution profit can be modeled as (Regular price − Regular unit cost) × Regular demand + (Premium price − Premium unit cost) × Premium demand.
+### Fixed quantities
+
+`d_i` is the average number of capsules bought on weeks when that household chose the product. Estimated from `coffee_capsules_data.csv`, not hard-coded:
+
+| Household | d when buying Regular | d when buying Premium |
+|---|---:|---:|
+| Household 1 | 4.3333 (9 weeks) | 4.0000 (2 weeks) |
+| Household 2 | 4.0000 (7 weeks) | 3.0000 (4 weeks) |
+| Household 3 | never buys Regular | 4.2857 (7 weeks) |
+
+### Lines in the R–P plane
+
+A linear probability model (OLS of a 0/1 indicator on an intercept, `R`, and `P`) supplies the 0.5 contour. Premium is the side of a switching line where the fitted score is at least 0.5. A household that sometimes buys nothing also has a stop-buying line.
+
+| Household | Fitted line | Reading |
+|---|---|---|
+| Household 1 | `P = 1.6030 R − 9.2621` | Always buys. Premium at or below the line, Regular above it. In-sample accuracy 11/11. |
+| Household 2 | `P = 0.2305 R + 67.6909` | Always buys. Premium at or below the line, Regular above it. One week sits just on the wrong side (accuracy 10/11). |
+| Household 3 | `P = 0.1205 R + 79.2906` | Never buys Regular. Still buys Premium at or below the line, and stops above it. Accuracy 11/11. |
+
+These are the same pattern as a classroom sketch (Household 1 cares about the gap, Household 2 mostly about `P`, Household 3 has a reservation price) but the slopes come from this CSV.
+
+### Shared linear programme
+
+Every assignment of products is solved as its own LP with `scipy.optimize.linprog` (HiGHS). The solver minimises, so the objective vector is the **negated** quantity vector. The best feasible assignment on this sample is Household 1 Premium, Household 2 Regular, Household 3 Premium:
+
+```text
+max  4.0000 R + 8.2857 P
+subject to
+  Household 1 buys Premium:  P <= 1.6030 R − 9.2621
+  Household 2 buys Regular:  P >= 0.2305 R + 67.6909
+  Household 3 still buys:    P <= 0.1205 R + 79.2906
+  0 <= R <= 65
+  0 <= P <= 100
+```
+
+The upper bounds are the highest Regular and Premium prices in the experiment, so a price cannot run to infinity. Optimum: **R = €65.00**, **P = €87.12**, **revenue = €981.86**. It is a vertex: `R <= 65` and Household 3's buying line are both binding, and the constraints hold.
+
+Other feasible assignments earn less (about €933, €868, €830, €640, and €542). Two assignments are infeasible inside the price box.
+
+### Per-household programmes
+
+Each household is also solved alone, on its own line and its own quantity:
+
+| Household | Buys | Optimal R | Optimal P | Revenue |
+|---|---|---:|---:|---:|
+| Household 1 | Premium | €65.00 | €94.94 | €379.74 |
+| Household 2 | Regular | €65.00 | €100.00 | €260.00 |
+| Household 3 | Premium | €65.00 | €87.12 | €373.38 |
+
+Household 2's revenue does not depend on `P` once they are kept on the Regular side, so every feasible Premium price on that edge earns €260. HiGHS returns the vertex `P = 100`.
+
+`python price_optimisation.py` checks that each reported optimum is a vertex, satisfies `A_ub x <= b_ub`, and that revenue equals `c · x`.
+
+The **Shared prices** tab draws all three lines on one graph (solid, dashed, long-dashed), shades the winning feasible region, draws the objective level, and labels `Optimal: P=…, R=…, Revenue=…`. The formulation sits under the graph. The **Per household** tab repeats that for each household and prints the equation and `d_i`. Sensitivity re-solves the shared LP after a ±10% shock to each line coefficient, moves each household's own prices by ±10%, and widens the price box. The regret matrix includes the shared optimum, each household optimum, and the slider scenario.
+
+## Dataset
+
+`coffee_capsules_data.csv` is the file the app and `price_optimisation.py` read. It is the experiment schema (`T`, `P_Regular`, `P_Premium`, `HH1_Regular`, …). `data/coffee_capsules.csv` is this repository's earlier transcription of the same 11 weeks (same quantities and prices, different column names) and is kept because the observations match. Zero quantities are retained because they represent observed No Purchase behaviour.
 
 ## Limitations
 
-Only 11 weekly observations are available. OLS fits and scenarios are illustrative, sensitive to sparse price variation, and should not be treated as causal demand estimates or reliable forecasts. The intercept-at-zero interpretation is an extrapolation.
+Only 11 weekly observations are available. The fitted lines and the linear programme are exploratory. They are not causal elasticities, willingness-to-pay estimates, or out-of-sample forecasts. No unit costs were supplied, so the objective is revenue, not profit.
