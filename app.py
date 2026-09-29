@@ -21,12 +21,16 @@ importlib.reload(price_optimisation)
 
 from price_optimisation import (
     apply_chart_layout,
+    best_programme,
     bound_sensitivity,
     bound_sensitivity_figure,
+    classify_accuracy,
     constraint_table,
+    contour_line,
     contour_terms,
     format_display_equation,
     household_figure,
+    ols_regression,
     ols_switch_line,
     optimise_prices_detailed,
     predict_product,
@@ -40,6 +44,14 @@ from price_optimisation import (
 )
 
 SHOCK_PCT = 0.10
+# Lines a classmate might draw through the gap between groups, written P = m R + k.
+# They are a comparison, not a fit. Accuracy and the shared optimum are computed from them.
+ALTERNATIVE_CONTOURS = {
+    "Household 1": (0.6667, 40.00),
+    "Household 2": (0.1667, 67.50),
+    "Household 3": (-0.0502, 87.38),
+}
+EXAMPLE_WEEK = 4
 
 DATA_CSV = str(Path(__file__).resolve().parent / "coffee_capsules_data.csv")
 ALL_VIEW = "All households (shared prices)"
@@ -492,11 +504,25 @@ st.markdown('<div class="table-title">Regret versus that household\'s LP optimum
 render_table(reg_pivot.reset_index().map(_fmt2))
 
 
-def _latex_line(slope: float, icept: float) -> str:
+def _latex_line(slope: float, icept: float, digits: int = 4) -> str:
     if abs(slope) < 1e-8:
-        return rf"P = {icept:.4f}"
+        return rf"P = {icept:.{digits}f}"
     sign = "+" if icept >= 0 else "-"
-    return rf"P = {slope:.4f}\, R {sign} {abs(icept):.4f}"
+    return rf"P = {slope:.{digits}f}\, R {sign} {abs(icept):.{digits}f}"
+
+
+def _latex_matrix(rows, digits: int | None = None) -> str:
+    body = []
+    for row in rows:
+        cells = []
+        for value in row:
+            number = float(value)
+            if digits is None and abs(number - round(number)) < 1e-8:
+                cells.append(str(int(round(number))))
+            else:
+                cells.append(f"{number:.{4 if digits is None else digits}f}")
+        body.append(" & ".join(cells))
+    return r"\begin{bmatrix}" + r" \\ ".join(body) + r"\end{bmatrix}"
 
 
 def _buying_span(frame: pd.DataFrame, household: dict, product: str) -> tuple[float, float] | None:
@@ -583,6 +609,7 @@ def render_methodology(detail: dict, bound_rows: pd.DataFrame) -> None:
     )
     st.latex(r"\mathrm{score} = a + b_R R + b_P P")
     st.latex(r"a + b_R R + b_P P = 0.5 \quad \Rightarrow \quad P = m R + k")
+    st.markdown("The next section does this arithmetic for Household 1, then for all three households.")
     for household in households:
         used = household["lines"]
         accuracy = _accuracy_label_local(household)
@@ -695,4 +722,215 @@ def _accuracy_label_local(household: dict) -> str:
     return f"{correct}/{n}"
 
 
+def _coef(value: float) -> str:
+    return f"{value:.4f}"
+
+
+def render_line_origins(detail: dict) -> None:
+    """Where each switching line comes from. Every figure is computed from `detail`."""
+    frame = detail["frame"]
+    households = detail["households"]
+    fits = [ols_regression(frame, household) for household in households]
+    by_label = {household["label"]: fit for household, fit in zip(households, fits)}
+    focus_label = "Household 1" if "Household 1" in by_label else households[0]["label"]
+    focus = by_label[focus_label]
+    focus_household = next(item for item in households if item["label"] == focus_label)
+
+    section_head(
+        "Where the line equations come from",
+        "How a week becomes a 0 or a 1, how least squares turns that into a line, and why another line through the same gap is also allowed.",
+    )
+
+    st.markdown("#### How ordinary least squares draws the line")
+    st.markdown(
+        "For each household, label every week with a number y. "
+        "**Premium is 1 and Regular is 0.** "
+        "Household 3 never buys Regular, so there y is 1 on a week they bought something and 0 on a week they bought nothing."
+    )
+    st.markdown(
+        "Least squares then finds the intercept a and the slopes b and c that make"
+    )
+    st.latex(r"y = a + b R + c P")
+    st.markdown(
+        "as close as it can to those labels. Read the fitted value as a rough probability of Premium "
+        "(or of buying, for Household 3). The line on the chart is where that fitted value is one half:"
+    )
+    st.latex(r"a + b R + c P = 0.5")
+    st.markdown("Solve that for P:")
+    st.latex(r"P = \frac{0.5 - a - b R}{c} = m R + k")
+    st.latex(r"m = -\frac{b}{c}, \qquad k = \frac{0.5 - a}{c}")
+
+    st.markdown(f"#### {focus_label}, one week at a time")
+    st.markdown(
+        f"These are the {len(focus['rows'])} weeks in {focus_label}'s regression. "
+        f"y = 1 means {focus['positive_label']}."
+    )
+    week_table = pd.DataFrame([
+        {
+            "Week": row["week"],
+            "R": f"{row['R']:.0f}",
+            "P": f"{row['P']:.0f}",
+            "Choice": "nothing" if row["observed"] == "None" else row["observed"],
+            "y": row["y"],
+        }
+        for row in focus["rows"]
+    ])
+    render_table(week_table)
+    st.markdown("Least squares on that table gives")
+    st.latex(rf"a = {_coef(focus['a'])}, \quad b = {_coef(focus['b'])}, \quad c = {_coef(focus['c'])}")
+    st.markdown("Turn the coefficients into the slope and intercept of the 0.5 contour:")
+    st.latex(
+        rf"m = -\frac{{b}}{{c}} = {_coef(focus['m'])}, \qquad "
+        rf"k = \frac{{0.5 - a}}{{c}} = {_coef(focus['k'])}"
+    )
+    st.latex(_latex_line(focus["m"], focus["k"], digits=4))
+    st.markdown("The chart rounds that to two decimals:")
+    st.latex(_latex_line(focus["m"], focus["k"], digits=2))
+
+    example = next((row for row in focus["rows"] if row["week"] == EXAMPLE_WEEK), focus["rows"][0])
+    called = predict_product(
+        {"lines": [focus["line"]], "only_product": focus_household.get("only_product")},
+        example["R"],
+        example["P"],
+    )
+    side = "above" if example["fitted"] >= 0.5 else "below"
+    observed = "nothing" if example["observed"] == "None" else example["observed"]
+    called_text = "nothing" if called == "None" else called
+    match = "which matches" if called == example["observed"] else "which does not match"
+    st.markdown(
+        f"Week {example['week']} has R = {example['R']:.0f} and P = {example['P']:.0f}. Plug those prices in:"
+    )
+    st.latex(
+        rf"\hat{{y}} = a + b \cdot {example['R']:.0f} + c \cdot {example['P']:.0f} = {example['fitted']:.4f}"
+    )
+    st.markdown(
+        f"{example['fitted']:.4f} is {side} one half, so the line says **{called_text}**. "
+        f"{focus_label} bought {observed} that week, {match}."
+    )
+
+    with st.expander("The same fit in matrix form"):
+        st.markdown(
+            "Stack a column of ones, the Regular prices, and the Premium prices into X, "
+            "and the labels into y. The least-squares coefficients are"
+        )
+        st.latex(r"\hat\beta = (X^\top X)^{-1} X^\top y")
+        st.latex(rf"X = {_latex_matrix(focus['X'])}")
+        st.latex(rf"y = {_latex_matrix([[value] for value in focus['y']])}")
+        st.latex(rf"X^\top X = {_latex_matrix(focus['XtX'])}, \qquad X^\top y = {_latex_matrix([[value] for value in focus['Xty']])}")
+        st.latex(
+            rf"\hat\beta = {_latex_matrix([[value] for value in focus['beta']], digits=4)} "
+            rf"= \begin{{bmatrix}} a \\ b \\ c \end{{bmatrix}}"
+        )
+
+    st.markdown("#### All three households")
+    st.markdown(
+        "The same regression for each household. Accuracy is how many of the "
+        f"{fits[0]['n']} weeks the fitted line classifies correctly. "
+        "Household 2's row is the OLS line, not the threshold the programme uses."
+    )
+    coef_rows = []
+    for household, fit in zip(households, fits):
+        coef_rows.append({
+            "Household": household["label"],
+            "y = 1": fit["positive_label"],
+            "a": _coef(fit["a"]),
+            "b": _coef(fit["b"]),
+            "c": _coef(fit["c"]),
+            "m": _coef(fit["m"]),
+            "k": _coef(fit["k"]),
+            "Accuracy": f"{fit['correct']}/{fit['n']}",
+        })
+    render_table(pd.DataFrame(coef_rows))
+
+    threshold_household = next(
+        (household for household in households if any(line.get("fixed_threshold") is not None for line in household["lines"])),
+        None,
+    )
+    if threshold_household is not None:
+        threshold_fit = by_label[threshold_household["label"]]
+        level = next(
+            float(line["fixed_threshold"])
+            for line in threshold_household["lines"]
+            if line.get("fixed_threshold") is not None
+        )
+        misses = _ols_misses(frame, threshold_household)
+        if misses:
+            described = "; ".join(
+                f"week {miss['week']} (R = {miss['R']:.0f}, P = {miss['P']:.0f}) was {miss['observed']}, "
+                f"and the OLS line called it {miss['predicted']}"
+                for miss in misses
+            )
+            miss_fit = next(
+                (row["fitted"] for row in threshold_fit["rows"] if row["week"] == misses[0]["week"]),
+                None,
+            )
+            fitted_bit = f" The fitted value that week is {miss_fit:.4f}." if miss_fit is not None else ""
+            st.markdown(
+                f'<div class="callout"><strong>{escape(threshold_household["label"])}.</strong> '
+                f"OLS gets {threshold_fit['correct']}/{threshold_fit['n']}. It misclassifies {escape(described)}."
+                f"{escape(fitted_bit)} "
+                f"The programme uses the separating threshold P = {level:.2f} instead, "
+                f"which scores {_accuracy_label_local(threshold_household)}.</div>",
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("#### Why other lines are also valid")
+    st.markdown(
+        "The weeks fall into two groups with a gap between them, so many lines split the sample cleanly. "
+        "A line drawn through that gap — by hand, or by a max-margin rule — can score as well as OLS. "
+        "OLS is pulled toward every week, which is why Household 1's fitted line is steeper than a line that only has to sit in the gap."
+    )
+    st.markdown("These three lines are of that kind:")
+    for household, fit in zip(households, fits):
+        slope, icept = ALTERNATIVE_CONTOURS[household["label"]]
+        st.latex(rf"\text{{{household['label']}}} \quad {_contour_latex(slope, icept)}")
+
+    alt_lines = {
+        household["label"]: contour_line(*ALTERNATIVE_CONTOURS[household["label"]], fit["kind"])
+        for household, fit in zip(households, fits)
+    }
+    alt_rows = []
+    for household, fit in zip(households, fits):
+        correct, n = classify_accuracy(frame, household, alt_lines[household["label"]])
+        slope, icept = ALTERNATIVE_CONTOURS[household["label"]]
+        sign = "−" if icept < 0 else "+"
+        alt_rows.append({
+            "Household": household["label"],
+            "Line": f"P = {slope:.4f}R {sign} {abs(icept):.2f}",
+            "Accuracy": f"{correct}/{n}",
+        })
+    render_table(pd.DataFrame(alt_rows))
+
+    clones = [{**household, "lines": [alt_lines[household["label"]]]} for household in households]
+    alternative = best_programme(clones, detail["bounds"])["best"]
+    shared = detail["shared"]["best"]
+    if alternative is None:
+        st.markdown("With these lines the shared programme has no feasible price pair inside the box.")
+    else:
+        st.markdown(
+            f"Put into the same linear programme — same quantities, same price box — they give "
+            f"**{alternative['assignment_label']}**, at R = {money(alternative['R'])}, "
+            f"P = {money(alternative['P'])}, weekly revenue {money(alternative['revenue'])}. "
+            f"The OLS menu, with Household 2 on its threshold, is {money(shared['revenue'])} "
+            f"at P = {money(shared['P'])}."
+        )
+    focus_alt_m = ALTERNATIVE_CONTOURS[focus_label][0]
+    st.markdown(
+        f"{focus_label}'s OLS slope is {focus['m']:.2f}. The other line's slope is {focus_alt_m:.2f}. "
+        "Every week tugs the OLS line, including weeks far from the boundary. "
+        "A line placed in the gap only has to keep the two groups apart, so it can be much flatter."
+    )
+    st.markdown(
+        "OLS is a defensible choice because it is reproducible: the same table always returns the same coefficients. "
+        "A hand-placed line depends on which gap you decide to sit in."
+    )
+
+
+def _contour_latex(slope: float, icept: float) -> str:
+    """Classmate lines keep four decimals on the slope and two on the intercept."""
+    sign = "+" if icept >= 0 else "-"
+    return rf"P = {slope:.4f}\, R {sign} {abs(icept):.2f}"
+
+
 render_methodology(detail, bound_table)
+render_line_origins(detail)
