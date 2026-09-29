@@ -721,7 +721,7 @@ def regret_table(detail: dict, scenario: tuple[float, float]) -> pd.DataFrame:
     for item in detail["per_household"]:
         best = item["programme"]["best"]
         menus.append((f"{item['household']['label']} LP optimum", best["R"], best["P"]))
-    menus.append(("Scenario sliders", float(scenario[0]), float(scenario[1])))
+    menus.append(("Scenario prices", float(scenario[0]), float(scenario[1])))
     rows = []
     for item in detail["per_household"]:
         household = item["household"]
@@ -849,10 +849,11 @@ def _axis_layout(fig: go.Figure, title: str, bounds: dict) -> None:
         title=title,
         xaxis_title="Regular price R",
         yaxis_title="Premium price P",
-        xaxis=dict(range=[bounds["R_lower"] - pad_r, bounds["R_upper"] + pad_r], zeroline=False),
-        yaxis=dict(range=[bounds["P_lower"] - pad_p, bounds["P_upper"] + pad_p], zeroline=False),
+        font=dict(family="Inter, Arial, sans-serif", color="#172033"),
+        xaxis=dict(range=[bounds["R_lower"] - pad_r, bounds["R_upper"] + pad_r], zeroline=False, gridcolor="#e8edf3", showgrid=True),
+        yaxis=dict(range=[bounds["P_lower"] - pad_p, bounds["P_upper"] + pad_p], zeroline=False, gridcolor="#e8edf3", showgrid=True),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-        margin=dict(l=48, r=24, t=80, b=48),
+        margin=dict(l=48, r=24, t=72, b=48),
         plot_bgcolor="white",
         paper_bgcolor="white",
         height=560,
@@ -882,8 +883,39 @@ def shared_figure(detail: dict) -> go.Figure:
     return fig
 
 
+def _add_observations(fig: go.Figure, frame: pd.DataFrame, household: dict) -> None:
+    """Weekly choices for one household: blue Regular, orange Premium."""
+    prefix = household["prefix"]
+    regular_price = frame["P_Regular"].to_numpy(dtype=float)
+    premium_price = frame["P_Premium"].to_numpy(dtype=float)
+    regular_qty = frame[f"{prefix}_Regular"].to_numpy(dtype=float)
+    premium_qty = frame[f"{prefix}_Premium"].to_numpy(dtype=float)
+    weeks = frame["T"].to_numpy()
+    choice = np.where(regular_qty > 0, "Regular", np.where(premium_qty > 0, "Premium", "No purchase"))
+    quantity = np.where(regular_qty > 0, regular_qty, premium_qty)
+    colors = {"Regular": "#1677ff", "Premium": "#ff8a1f", "No purchase": "#98a2b3"}
+    for name, color in colors.items():
+        mask = choice == name
+        if not np.any(mask):
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=regular_price[mask],
+                y=premium_price[mask],
+                mode="markers",
+                name=f"Observed {name}",
+                marker=dict(size=11, color=color, line=dict(color="white", width=1.4)),
+                customdata=np.column_stack([weeks[mask], quantity[mask]]),
+                hovertemplate=(
+                    "Week %{customdata[0]:.0f}<br>R=%{x:.0f}<br>P=%{y:.0f}"
+                    "<br>quantity %{customdata[1]:.0f}<extra>" + name + "</extra>"
+                ),
+            )
+        )
+
+
 def household_figure(detail: dict, label: str) -> go.Figure:
-    """One household: its own line, its own feasible region, its own optimum."""
+    """One household: its line, observed weeks, feasible region, and optimum."""
     bounds = detail["bounds"]
     item = next(entry for entry in detail["per_household"] if entry["household"]["label"] == label)
     solved = item["programme"]["best"]
@@ -891,10 +923,11 @@ def household_figure(detail: dict, label: str) -> go.Figure:
     _shade(fig, solved)
     span = (bounds["R_lower"] - 2, bounds["R_upper"] + 2)
     _add_household_lines(fig, [item["household"]], bounds, span)
+    _add_observations(fig, detail["frame"], item["household"])
     _objective_level(fig, solved, bounds)
     _optimum_marker(fig, solved, bounds)
     _axis_layout(fig, label, bounds)
-    fig.update_layout(height=480)
+    fig.update_layout(height=520)
     return fig
 
 
@@ -994,6 +1027,72 @@ def regret_figure(table: pd.DataFrame) -> go.Figure:
         paper_bgcolor="white",
     )
     return fig
+
+
+def _accuracy_label(household: dict) -> str:
+    n = household["n_regular"] + household["n_premium"] + household["n_none"]
+    if n == 0 or not np.isfinite(household["accuracy"]):
+        return ""
+    correct = int(round(household["accuracy"] * n))
+    return f"{correct}/{n}"
+
+
+def constraint_table(solved: dict, households: list[dict]) -> pd.DataFrame:
+    """Objective, both sides of each line, and the price box, with binding flags.
+
+    A side that is not part of this assignment is listed so the unused inequality
+    stays visible. Binding is only meaningful for rows that are in the programme.
+    """
+    if solved is None:
+        return pd.DataFrame(columns=["Piece", "Constraint", "Role", "Binding", "In-sample accuracy"])
+    rows = [{
+        "Piece": "Objective",
+        "Constraint": _format_objective(solved["c"]),
+        "Role": "maximise revenue",
+        "Binding": "",
+        "In-sample accuracy": "",
+    }]
+    active = set(solved["constraint_names"])
+    tight = set(solved.get("tight") or [])
+    for household in households:
+        accuracy = _accuracy_label(household)
+        for line in household["lines"]:
+            if line["kind"] == "switch":
+                options = (
+                    ("Premium", "high", "switches so that"),
+                    ("Regular", "low", "switches so that"),
+                )
+            else:
+                options = (
+                    ("still buys", "high", "keeps buying so that"),
+                    ("stops buying", "low", "stops buying so that"),
+                )
+            for role, side, kind in options:
+                text = inequality_text(line, side)
+                full = f"{household['label']} {kind} {text}"
+                if full in tight:
+                    binding = "yes"
+                elif full in active:
+                    binding = "no"
+                else:
+                    binding = "not in this programme"
+                rows.append({
+                    "Piece": household["label"],
+                    "Constraint": text,
+                    "Role": role,
+                    "Binding": binding,
+                    "In-sample accuracy": accuracy,
+                })
+    for name in solved["constraint_names"]:
+        if name.startswith("R ") or name.startswith("P "):
+            rows.append({
+                "Piece": "Price bound",
+                "Constraint": name,
+                "Role": "box",
+                "Binding": "yes" if name in tight else "no",
+                "In-sample accuracy": "",
+            })
+    return pd.DataFrame(rows)
 
 
 def sanity_check(detail: dict) -> list[str]:
