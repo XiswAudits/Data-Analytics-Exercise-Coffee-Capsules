@@ -7,9 +7,16 @@ quantities, lines, and optima all come from `price_optimisation.py`.
 from html import escape
 from pathlib import Path
 
+import importlib
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+# Streamlit Cloud reruns this file but keeps the previous price_optimisation
+# module in sys.modules. Reload so a hot reload cannot import stale names.
+import price_optimisation
+importlib.reload(price_optimisation)
 
 from price_optimisation import (
     bound_sensitivity,
