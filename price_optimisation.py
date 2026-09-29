@@ -97,18 +97,26 @@ def _score(line: dict, regular: float, premium: float) -> float:
 
 def line_equation(line: dict) -> str:
     """0.5 contour written as P = slope·R + intercept, a horizontal P, or a vertical R line."""
+    return format_display_equation(line, digits=4, compact=False)
+
+
+def format_display_equation(line: dict, digits: int = 2, compact: bool = True) -> str:
+    """Contour for a legend or card. Two decimals read as P = 1.60R − 9.26."""
+    gap = "" if compact else " "
     if line.get("fixed_threshold") is not None:
-        return f"P = {float(line['fixed_threshold']):.4f}"
+        return f"P = {float(line['fixed_threshold']):.{digits}f}"
     intercept, b_r, b_p = line["intercept"], line["b_R"], line["b_P"]
     if abs(b_p) < 1e-12:
         if abs(b_r) < 1e-12:
             return "score does not depend on price"
         level = (0.5 - intercept) / b_r
-        return f"R = {level:.4f}"
+        return f"R = {level:.{digits}f}"
     slope = -b_r / b_p
     icept = (0.5 - intercept) / b_p
-    sign = "+" if icept >= 0 else "−"
-    return f"P = {slope:.4f} R {sign} {abs(icept):.4f}"
+    if abs(slope) < 1e-8:
+        return f"P = {icept:.{digits}f}"
+    sign = "−" if icept < 0 else "+"
+    return f"P = {slope:.{digits}f}{gap}R {sign} {abs(icept):.{digits}f}"
 
 
 def _halfspace(line: dict, side: str) -> tuple[np.ndarray, float]:
@@ -776,8 +784,136 @@ def regret_table(detail: dict, scenario: tuple[float, float]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _add_household_lines(fig: go.Figure, households: list[dict], bounds: dict, span: tuple[float, float]) -> None:
-    r_grid = np.linspace(span[0], span[1], 80)
+_CHART_FONT = "Inter, Arial, sans-serif"
+
+
+def apply_chart_layout(
+    fig: go.Figure,
+    *,
+    height: int,
+    title: str | None = None,
+    xaxis_title: str | None = None,
+    yaxis_title: str | None = None,
+    show_legend: bool = True,
+    left: int = 72,
+    right: int = 28,
+    bottom: int | None = None,
+    top: int | None = None,
+) -> go.Figure:
+    """One layout for every chart: title clear of the plot, legend in a row underneath."""
+    named = [trace for trace in fig.data if getattr(trace, "name", None) and trace.showlegend is not False]
+    legend_rows = 1 if len(named) <= 3 else 2 if len(named) <= 6 else 3
+    if bottom is None:
+        bottom = (28 + 26 * legend_rows + (18 if xaxis_title else 0)) if show_legend else (48 if xaxis_title else 36)
+    if top is None:
+        top = 56 if title else 16
+    fig.update_layout(
+        font=dict(family=_CHART_FONT, size=13, color="#172033"),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        height=height,
+        margin=dict(l=left, r=right, t=top, b=bottom, autoexpand=True),
+        hoverlabel=dict(font=dict(family=_CHART_FONT, size=12), bgcolor="white", bordercolor="#e5eaf0"),
+        title=dict(
+            text=title,
+            x=0,
+            xanchor="left",
+            xref="container",
+            y=1,
+            yanchor="top",
+            yref="container",
+            pad=dict(t=10, b=2, l=2, r=0),
+            font=dict(family=_CHART_FONT, size=15, color="#101828"),
+        ) if title else None,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=0.012,
+            yref="container",
+            xanchor="center",
+            x=0.5,
+            xref="container",
+            font=dict(family=_CHART_FONT, size=12, color="#344054"),
+            bgcolor="rgba(255,255,255,0)",
+            itemsizing="constant",
+            traceorder="normal",
+        ),
+        showlegend=show_legend,
+    )
+    fig.update_xaxes(
+        automargin=True,
+        tickfont=dict(family=_CHART_FONT, size=12, color="#475467"),
+        title=dict(
+            text=xaxis_title or "",
+            standoff=10,
+            font=dict(family=_CHART_FONT, size=13, color="#344054"),
+        ),
+    )
+    fig.update_yaxes(
+        automargin=True,
+        tickfont=dict(family=_CHART_FONT, size=12, color="#475467"),
+        title=dict(
+            text=yaxis_title or "",
+            standoff=12,
+            font=dict(family=_CHART_FONT, size=13, color="#344054"),
+        ),
+    )
+    return fig
+
+
+def _clip_segment(
+    x0: float, y0: float, x1: float, y1: float, xr: list[float], yr: list[float]
+) -> tuple[float, float, float, float] | None:
+    """Liang–Barsky clip of a segment to the axis rectangle."""
+    dx, dy = x1 - x0, y1 - y0
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, x0 - xr[0]), (dx, xr[1] - x0), (-dy, y0 - yr[0]), (dy, yr[1] - y0)):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return None
+            continue
+        t = q / p
+        if p < 0:
+            if t > t1:
+                return None
+            t0 = max(t0, t)
+        else:
+            if t < t0:
+                return None
+            t1 = min(t1, t)
+    if t0 > t1:
+        return None
+    return (x0 + t0 * dx, y0 + t0 * dy, x0 + t1 * dx, y0 + t1 * dy)
+
+
+def _axis_window(
+    solved: dict,
+    bounds: dict,
+    extra: list[tuple[float, float]] | None = None,
+) -> tuple[list[float], list[float]]:
+    """Range that contains the whole feasible region, with room for the optimum label."""
+    pts = [np.asarray(pt, dtype=float) for pt in (solved.get("vertices") or [])]
+    if solved.get("feasible"):
+        pts.append(np.array([float(solved["R"]), float(solved["P"])], dtype=float))
+    for regular, premium in extra or []:
+        pts.append(np.array([float(regular), float(premium)], dtype=float))
+    if len(pts) < 1:
+        return [bounds["R_lower"] - 4.0, bounds["R_upper"] + 6.0], [bounds["P_lower"] - 4.0, bounds["P_upper"] + 8.0]
+    arr = np.vstack(pts)
+    r0, r1 = float(arr[:, 0].min()), float(arr[:, 0].max())
+    p0, p1 = float(arr[:, 1].min()), float(arr[:, 1].max())
+    span_r = max(r1 - r0, 8.0)
+    span_p = max(p1 - p0, 8.0)
+    pad_r = max(8.0, min(12.0, 0.55 * span_r))
+    pad_p = max(10.0, min(14.0, 0.6 * span_p))
+    # A little context outside the price box, without a deep empty margin.
+    x0 = max(bounds["R_lower"] - 4.0, r0 - pad_r)
+    y0 = max(bounds["P_lower"] - 4.0, p0 - pad_p)
+    return [x0, r1 + pad_r], [y0, p1 + pad_p]
+
+
+def _add_household_lines(fig: go.Figure, households: list[dict], span: tuple[float, float]) -> None:
+    r_grid = np.linspace(span[0], span[1], 120)
     for household in households:
         for line in household["lines"]:
             if abs(line["b_P"]) < 1e-12:
@@ -790,12 +926,11 @@ def _add_household_lines(fig: go.Figure, households: list[dict], bounds: dict, s
                     x=r_grid,
                     y=p_grid,
                     mode="lines",
-                    name=f"{household['label']}: {line['equation']}",
+                    name=f"{household['label']}: {format_display_equation(line)}",
                     line=dict(
                         color=LINE_COLOR.get(household["label"], "#172033"),
                         dash=LINE_STYLE.get(household["label"], "solid"),
                         width=2.5,
-                        shape="spline",
                     ),
                     hovertemplate="R=%{x:.2f}<br>P=%{y:.2f}<extra>" + household["label"] + "</extra>",
                 )
@@ -822,30 +957,46 @@ def _shade(fig: go.Figure, solved: dict) -> None:
     )
 
 
-def _objective_level(fig: go.Figure, solved: dict, bounds: dict) -> None:
+def _objective_level(fig: go.Figure, solved: dict, x_range: list[float], y_range: list[float]) -> None:
     coeff = solved["c"]
     if not solved["feasible"]:
         return
     revenue = solved["revenue"]
-    r0, r1 = bounds["R_lower"], bounds["R_upper"]
     if abs(coeff[1]) > 1e-10:
-        p0 = (revenue - coeff[0] * r0) / coeff[1]
-        p1 = (revenue - coeff[0] * r1) / coeff[1]
+        y_at = lambda regular: (revenue - coeff[0] * regular) / coeff[1]
+        y0, y1 = y_at(x_range[0]), y_at(x_range[1])
+        # Pull a nearby iso-revenue line fully inside the axes instead of clipping it.
+        if min(y0, y1) >= y_range[0] - 16 and max(y0, y1) <= y_range[1] + 16:
+            y_range[0] = min(y_range[0], min(y0, y1) - 2.0)
+            y_range[1] = max(y_range[1], max(y0, y1) + 2.0)
+        clipped = _clip_segment(x_range[0], y0, x_range[1], y1, x_range, y_range)
+        if clipped is None:
+            return
+        xa, ya, xb, yb = clipped
         fig.add_trace(
             go.Scatter(
-                x=[r0, r1],
-                y=[p0, p1],
+                x=[xa, xb],
+                y=[ya, yb],
                 mode="lines",
                 name="Objective level",
                 line=dict(color="#0f9f6e", width=2, dash="dot"),
                 hovertemplate="Iso-revenue<extra></extra>",
             )
         )
-    elif abs(coeff[0]) > 1e-10:
-        fig.add_vline(x=solved["R"], line=dict(color="#0f9f6e", width=2, dash="dot"))
+    elif abs(coeff[0]) > 1e-10 and x_range[0] <= solved["R"] <= x_range[1]:
+        fig.add_trace(
+            go.Scatter(
+                x=[solved["R"], solved["R"]],
+                y=[y_range[0], y_range[1]],
+                mode="lines",
+                name="Objective level",
+                line=dict(color="#0f9f6e", width=2, dash="dot"),
+                hovertemplate="Iso-revenue<extra></extra>",
+            )
+        )
 
 
-def _optimum_marker(fig: go.Figure, solved: dict, bounds: dict) -> None:
+def _optimum_marker(fig: go.Figure, solved: dict, x_range: list[float], y_range: list[float]) -> None:
     if not solved["feasible"]:
         return
     fig.add_trace(
@@ -858,39 +1009,51 @@ def _optimum_marker(fig: go.Figure, solved: dict, bounds: dict) -> None:
             hovertemplate=f"R=%{{x:.2f}}<br>P=%{{y:.2f}}<br>Revenue={solved['revenue']:.2f}<extra></extra>",
         )
     )
-    # Keep the label inside the axes when the star sits on the upper-right corner.
-    ax = -120 if solved["R"] > 0.55 * bounds["R_upper"] else 80
-    ay = 55 if solved["P"] > 0.72 * bounds["P_upper"] else -50
+    span_x = x_range[1] - x_range[0]
+    span_y = y_range[1] - y_range[0]
+    near_right = solved["R"] >= x_range[0] + 0.5 * span_x
+    near_top = solved["P"] >= y_range[0] + 0.58 * span_y
+    text_x = solved["R"] - 0.045 * span_x if near_right else solved["R"] + 0.045 * span_x
+    text_y = solved["P"] - 0.07 * span_y if near_top else solved["P"] + 0.07 * span_y
+    text_x = min(max(text_x, x_range[0] + 0.22 * span_x), x_range[1] - 0.04 * span_x)
+    text_y = min(max(text_y, y_range[0] + 0.16 * span_y), y_range[1] - 0.08 * span_y)
     fig.add_annotation(
         x=solved["R"],
         y=solved["P"],
-        text=f"Optimal: P={solved['P']:.2f}, R={solved['R']:.2f}, Revenue={solved['revenue']:.2f}",
+        ax=text_x,
+        ay=text_y,
+        axref="x",
+        ayref="y",
+        xanchor="right" if text_x <= solved["R"] else "left",
+        yanchor="top" if text_y <= solved["P"] else "bottom",
+        text=(
+            f"P = {solved['P']:.2f}<br>R = {solved['R']:.2f}<br>Revenue = {solved['revenue']:.2f}"
+        ),
         showarrow=True,
         arrowhead=2,
-        ax=ax,
-        ay=ay,
+        arrowwidth=1.2,
+        arrowcolor="#172033",
         bgcolor="white",
-        bordercolor="#172033",
+        bordercolor="#d0d5dd",
         borderwidth=1,
-        font=dict(size=12, color="#172033"),
+        borderpad=5,
+        align="left",
+        font=dict(family=_CHART_FONT, size=12, color="#172033"),
     )
 
 
-def _axis_layout(fig: go.Figure, title: str, bounds: dict) -> None:
-    pad_r = max(4.0, 0.08 * bounds["R_upper"])
-    pad_p = max(6.0, 0.08 * bounds["P_upper"])
-    fig.update_layout(
-        title=title,
+def _price_axes(fig: go.Figure, bounds: dict, x_range: list[float], y_range: list[float], height: int = 560) -> None:
+    fig.update_xaxes(range=list(x_range), zeroline=False, gridcolor="#e8edf3", showgrid=True)
+    fig.update_yaxes(range=list(y_range), zeroline=False, gridcolor="#e8edf3", showgrid=True)
+    apply_chart_layout(
+        fig,
+        height=height,
         xaxis_title="Regular price R",
         yaxis_title="Premium price P",
-        font=dict(family="Inter, Arial, sans-serif", color="#172033"),
-        xaxis=dict(range=[bounds["R_lower"] - pad_r, bounds["R_upper"] + pad_r], zeroline=False, gridcolor="#e8edf3", showgrid=True),
-        yaxis=dict(range=[bounds["P_lower"] - pad_p, bounds["P_upper"] + pad_p], zeroline=False, gridcolor="#e8edf3", showgrid=True),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-        margin=dict(l=48, r=24, t=72, b=48),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        height=560,
+        left=78,
+        right=36,
+        bottom=108,
+        top=20,
     )
     fig.add_shape(
         type="rect",
@@ -898,23 +1061,39 @@ def _axis_layout(fig: go.Figure, title: str, bounds: dict) -> None:
         x1=bounds["R_upper"],
         y0=bounds["P_lower"],
         y1=bounds["P_upper"],
-        line=dict(color="rgba(23,32,51,0.25)", width=1, dash="dot"),
+        line=dict(color="rgba(23,32,51,0.28)", width=1, dash="dot"),
         fillcolor="rgba(0,0,0,0)",
     )
 
 
-def shared_figure(detail: dict) -> go.Figure:
-    """All three household lines, the shared feasible region, and one optimum."""
+def _price_figure(detail: dict, solved: dict, households: list[dict], frame: pd.DataFrame | None = None) -> go.Figure:
+    """Feasible region, lines, and optimum, framed so labels stay inside the axes."""
     bounds = detail["bounds"]
-    solved = detail["shared"]["best"]
+    extra = None
+    if frame is not None:
+        extra = list(
+            zip(
+                frame["P_Regular"].to_numpy(dtype=float),
+                frame["P_Premium"].to_numpy(dtype=float),
+            )
+        )
+    x_range, y_range = _axis_window(solved, bounds, extra)
     fig = go.Figure()
     _shade(fig, solved)
-    span = (bounds["R_lower"] - 2, bounds["R_upper"] + 2)
-    _add_household_lines(fig, detail["households"], bounds, span)
-    _objective_level(fig, solved, bounds)
-    _optimum_marker(fig, solved, bounds)
-    _axis_layout(fig, "Shared prices", bounds)
+    _add_household_lines(fig, households, (x_range[0], x_range[1]))
+    if frame is not None and len(households) == 1:
+        _add_observations(fig, frame, households[0])
+    _objective_level(fig, solved, x_range, y_range)
+    fig.update_xaxes(range=list(x_range))
+    fig.update_yaxes(range=list(y_range))
+    _optimum_marker(fig, solved, x_range, y_range)
+    _price_axes(fig, bounds, x_range, y_range, height=580 if frame is None else 620)
     return fig
+
+
+def shared_figure(detail: dict) -> go.Figure:
+    """All three household lines, the shared feasible region, and one optimum."""
+    return _price_figure(detail, detail["shared"]["best"], detail["households"])
 
 
 def _add_observations(fig: go.Figure, frame: pd.DataFrame, household: dict) -> None:
@@ -950,115 +1129,130 @@ def _add_observations(fig: go.Figure, frame: pd.DataFrame, household: dict) -> N
 
 def household_figure(detail: dict, label: str) -> go.Figure:
     """One household: its line, observed weeks, feasible region, and optimum."""
-    bounds = detail["bounds"]
     item = next(entry for entry in detail["per_household"] if entry["household"]["label"] == label)
-    solved = item["programme"]["best"]
+    return _price_figure(detail, item["programme"]["best"], [item["household"]], frame=detail["frame"])
+
+
+def _shock_tick(parameter: str, shock: str) -> str:
+    text = str(parameter)
+    if "threshold" in text and "=" in text:
+        level = float(text.split("=")[-1])
+        text = f"P = {level:.2f}"
+    text = text.replace("slope on R", "slope R").replace("slope on P", "slope P")
+    return f"{text} {shock}"
+
+
+def _bar_chart(table: pd.DataFrame, title: str, yaxis_title: str) -> go.Figure:
     fig = go.Figure()
-    _shade(fig, solved)
-    span = (bounds["R_lower"] - 2, bounds["R_upper"] + 2)
-    _add_household_lines(fig, [item["household"]], bounds, span)
-    _add_observations(fig, detail["frame"], item["household"])
-    _objective_level(fig, solved, bounds)
-    _optimum_marker(fig, solved, bounds)
-    _axis_layout(fig, label, bounds)
-    fig.update_layout(height=520)
+    for household, color in LINE_COLOR.items():
+        part = table[table["Household"] == household]
+        if part.empty:
+            continue
+        fig.add_trace(
+            go.Bar(
+                x=[_shock_tick(row.parameter, row.shock) for row in part.itertuples()],
+                y=part["delta_revenue"],
+                name=household,
+                marker_color=color,
+                hovertemplate="%{x}<br>%{y:.2f} €<extra>" + household + "</extra>",
+            )
+        )
+    fig.update_layout(barmode="group")
+    fig.update_xaxes(tickangle=-28)
+    apply_chart_layout(
+        fig,
+        height=460,
+        title=title,
+        yaxis_title=yaxis_title,
+        left=78,
+        right=24,
+        top=58,
+        bottom=120,
+    )
+    fig.update_yaxes(zeroline=True, zerolinecolor="#d0d5dd", gridcolor="#e8edf3")
     return fig
 
 
 def structural_sensitivity_figure(table: pd.DataFrame) -> go.Figure:
     coef = table[table["kind"] == "line coefficient"]
-    fig = go.Figure()
-    for household, color in LINE_COLOR.items():
-        part = coef[coef["Household"] == household]
-        if part.empty:
-            continue
-        fig.add_trace(
-            go.Bar(
-                x=[f"{row.parameter} {row.shock}" for row in part.itertuples()],
-                y=part["delta_revenue"],
-                name=household,
-                marker_color=color,
-            )
-        )
-    fig.update_layout(
-        barmode="group",
-        title="Shared revenue change when a fitted line moves ±10%",
-        yaxis_title="Change in shared revenue (€)",
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        height=420,
-        margin=dict(l=48, r=16, t=60, b=80),
-        legend=dict(orientation="h", y=1.12),
-    )
-    return fig
+    return _bar_chart(coef, "Shared revenue when a line moves ±10%", "Change in shared revenue (€)")
 
 
 def price_move_figure(table: pd.DataFrame) -> go.Figure:
     moves = table[table["kind"] == "price move"]
-    fig = go.Figure()
-    for household, color in LINE_COLOR.items():
-        part = moves[moves["Household"] == household]
-        fig.add_trace(
-            go.Bar(
-                x=[f"{row.parameter} {row.shock}" for row in part.itertuples()],
-                y=part["delta_revenue"],
-                name=household,
-                marker_color=color,
-            )
-        )
-    fig.update_layout(
-        barmode="group",
-        title="Revenue change when that household's own optimum price moves ±10%",
-        yaxis_title="Change versus own optimum (€)",
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        height=420,
-        margin=dict(l=48, r=16, t=60, b=48),
-        legend=dict(orientation="h", y=1.12),
-    )
-    return fig
+    return _bar_chart(moves, "Revenue when that household's price moves ±10%", "Change versus own optimum (€)")
 
 
 def bound_sensitivity_figure(table: pd.DataFrame) -> go.Figure:
+    labels = [str(name).replace("Observed maximum", "Sample max") for name in table["Price box"]]
     fig = go.Figure(
         go.Bar(
-            x=table["Price box"],
+            x=labels,
             y=table["max_revenue"],
             marker_color="#1677ff",
-            text=[f"R={r:.1f}, P={p:.1f}" for r, p in zip(table["R_opt"], table["P_opt"])],
+            text=[f"R {r:.2f}<br>P {p:.2f}" for r, p in zip(table["R_opt"], table["P_opt"])],
             textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{x}<br>revenue %{y:.2f} €<extra></extra>",
         )
     )
-    fig.update_layout(
-        title="Shared revenue as the upper price box widens",
+    apply_chart_layout(
+        fig,
+        height=440,
+        title="Shared revenue as the price box widens",
         yaxis_title="Shared revenue (€)",
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        height=420,
-        margin=dict(l=48, r=16, t=60, b=48),
+        show_legend=False,
+        left=78,
+        right=24,
+        top=58,
+        bottom=64,
     )
+    peak = float(np.nanmax(table["max_revenue"].to_numpy(dtype=float)))
+    fig.update_yaxes(range=[0, peak * 1.22], gridcolor="#e8edf3", zeroline=False)
     return fig
+
+
+_MENU_LABEL = {
+    "Shared LP optimum": "Shared LP",
+    "Household 1 LP optimum": "HH1 LP",
+    "Household 2 LP optimum": "HH2 LP",
+    "Household 3 LP optimum": "HH3 LP",
+    "Scenario prices": "Scenario",
+}
 
 
 def regret_figure(table: pd.DataFrame) -> go.Figure:
     pivot = table.pivot(index="Household", columns="Menu", values="regret")
+    columns = [_MENU_LABEL.get(str(name), str(name)) for name in pivot.columns]
     fig = go.Figure(
         data=go.Heatmap(
             z=pivot.to_numpy(),
-            x=list(pivot.columns),
+            x=columns,
             y=list(pivot.index),
             colorscale="Blues",
-            colorbar=dict(title="Regret €"),
+            colorbar=dict(
+                title=dict(text="Regret (€)", font=dict(family=_CHART_FONT, size=12, color="#344054")),
+                thickness=14,
+                len=0.7,
+                tickfont=dict(family=_CHART_FONT, size=11),
+            ),
             text=np.round(pivot.to_numpy(), 2),
             texttemplate="%{text:.2f}",
+            textfont=dict(family=_CHART_FONT, size=12, color="#172033"),
             hovertemplate="%{y}<br>%{x}<br>regret €%{z:.2f}<extra></extra>",
+            xgap=4,
+            ygap=4,
         )
     )
-    fig.update_layout(
-        title="Regret versus each household's own LP optimum",
-        height=360,
-        margin=dict(l=80, r=16, t=60, b=80),
-        paper_bgcolor="white",
+    apply_chart_layout(
+        fig,
+        height=380,
+        title="Regret versus each household's own optimum",
+        show_legend=False,
+        left=120,
+        right=88,
+        top=58,
+        bottom=56,
     )
     return fig
 
