@@ -6,6 +6,7 @@ quantities, lines, and optima all come from `price_optimisation.py`.
 
 from html import escape
 from pathlib import Path
+import re
 
 import importlib
 
@@ -19,11 +20,12 @@ import price_optimisation
 importlib.reload(price_optimisation)
 
 from price_optimisation import (
+    apply_chart_layout,
     bound_sensitivity,
     bound_sensitivity_figure,
     constraint_table,
     contour_terms,
-    household_equations,
+    format_display_equation,
     household_figure,
     ols_switch_line,
     optimise_prices_detailed,
@@ -47,33 +49,60 @@ st.set_page_config(page_title="Revenue-maximising prices", page_icon="☕", layo
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-html, body, [class*="css"], .stApp {font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;}
+html, body, [class*="css"], .stApp, [data-testid="stMarkdown"], [data-testid="stCaptionContainer"],
+label, input, button, [data-testid="stHeading"] {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+}
 .stApp, [data-testid="stAppViewContainer"] {background: #f3f5f7; color: #101828;}
 [data-testid="stSidebar"] {display: none;}
 .block-container {max-width: 1180px; padding: 28px 28px 64px;}
 h1 {font-size: 36px; line-height: 1.08; letter-spacing: -1.4px; font-weight: 600; color: #101828; margin: 0 0 8px;}
-.lede {color: #667085; font-size: 15px; line-height: 1.55; max-width: 720px; margin: 0 0 22px;}
-.eyebrow {display: inline-block; padding: 6px 10px; border-radius: 999px; background: #edf3f9; color: #4b6380; font-size: 11px; font-weight: 600; margin-bottom: 10px;}
-.card {background: #fff; border: 1px solid #e5eaf0; border-radius: 18px; padding: 16px 18px; box-shadow: 0 5px 20px rgba(16,24,40,.035); height: 100%;}
-.card-title {color: #101828; font-size: 14px; font-weight: 600; margin-bottom: 4px;}
-.card-sub {color: #98a2b3; font-size: 12px; line-height: 1.5;}
-.equation {background: #f8fafc; border: 1px solid #e7edf3; border-radius: 12px; padding: 12px 14px; color: #172033; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.45;}
-.note {color: #667085; font-size: 12px; line-height: 1.5; margin: 8px 0 0;}
+h4 {font-size: 18px !important; line-height: 1.3 !important; font-weight: 600 !important; color: #101828 !important; letter-spacing: -0.3px; margin: 22px 0 6px !important;}
+.lede {color: #667085; font-size: 15px; line-height: 1.55; max-width: 760px; margin: 0 0 18px;}
+.eyebrow {display: inline-block; padding: 6px 10px; border-radius: 999px; background: #edf3f9; color: #4b6380; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; margin-bottom: 10px;}
+.card, .section-head {background: #fff; border: 1px solid #e5eaf0; border-radius: 18px; padding: 16px 18px; box-shadow: 0 5px 20px rgba(16,24,40,.035);}
+.section-head {margin: 22px 0 12px;}
+.card-title {color: #101828; font-size: 16px; font-weight: 600; letter-spacing: -0.2px; margin: 0 0 4px;}
+.card-sub {color: #667085; font-size: 13px; line-height: 1.5;}
+.switch-label {color: #101828; font-size: 13px; font-weight: 600; margin: 16px 0 6px;}
+.kpi-row, .formula-grid {display: grid; gap: 12px; align-items: stretch;}
+.kpi-row {grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 4px 0 6px;}
+.kpi {background: #fff; border: 1px solid #e5eaf0; border-radius: 16px; padding: 14px 16px 16px; box-shadow: 0 4px 16px rgba(16,24,40,.035); min-height: 96px; display: flex; flex-direction: column;}
+.kpi-label {font-size: 12px; line-height: 1.35; color: #667085; font-weight: 500;}
+.kpi-value {margin-top: auto; padding-top: 8px; font-size: 26px; line-height: 1.15; letter-spacing: -0.6px; font-weight: 600; color: #101828;}
+.kpi-value.compact {font-size: 15px; line-height: 1.35; letter-spacing: -0.2px; font-weight: 600;}
+.formula-grid {grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-top: 14px;}
+.formula-card {background: #fff; border: 1px solid #e5eaf0; border-radius: 16px; padding: 14px 16px 16px; box-shadow: 0 5px 20px rgba(16,24,40,.035); min-height: 188px; height: 100%; display: flex; flex-direction: column;}
+.formula-kicker {font-size: 12px; font-weight: 600; color: #4b6380; letter-spacing: 0.01em; margin-bottom: 8px;}
+.formula-lead {font-size: 14px; line-height: 1.45; color: #344054;}
+.formula-eq {font-size: 16px; line-height: 1.35; font-weight: 600; color: #101828; letter-spacing: -0.2px; margin: 2px 0 8px;}
+.formula-meta {margin-top: auto; padding-top: 8px; border-top: 1px solid #eef2f6; font-size: 13px; line-height: 1.5; color: #667085;}
+.callout {margin-top: 12px; background: #fff; border: 1px solid #e5eaf0; border-left: 3px solid #ff8a1f; border-radius: 12px; padding: 12px 14px; color: #344054; font-size: 14px; line-height: 1.5;}
+.callout strong {color: #101828; font-weight: 600;}
+.table-wrap {width: 100%; overflow: hidden; background: #fff; border: 1px solid #e5eaf0; border-radius: 14px; margin: 0 0 8px;}
+table.grid {width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; line-height: 1.4;}
+table.grid th, table.grid td {padding: 8px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid #eef2f6; overflow-wrap: break-word; word-wrap: break-word;}
+table.grid th {background: #f8fafc; color: #667085; font-size: 12px; font-weight: 600;}
+table.grid tr:last-child td {border-bottom: 0;}
+table.grid td {color: #172033;}
 .insight {background: linear-gradient(160deg, #172033, #24384f); color: #fff; border-radius: 18px; padding: 22px 20px; min-height: 100%; box-shadow: 0 14px 30px rgba(23,32,51,.16);}
 .insight .eyebrow {background: rgba(255,255,255,.12); color: #dbeafe;}
-.insight h2 {color: white; font-size: 28px; letter-spacing: -0.8px; margin: 6px 0 4px; font-weight: 600;}
-.insight .sub {color: #cbd5e1; font-size: 13px; margin: 0 0 12px;}
-.prob-row {display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.1); font-size: 13px;}
+.insight h2 {color: white; font-size: 26px; letter-spacing: -0.6px; margin: 6px 0 4px; font-weight: 600; line-height: 1.15;}
+.insight .sub {color: #cbd5e1; font-size: 13px; line-height: 1.45; margin: 0 0 12px;}
+.prob-row {display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.1); font-size: 13px; line-height: 1.4;}
+.prob-row span {color: #e2e8f0; flex: 0 0 auto;}
+.prob-row b {font-weight: 600; text-align: right; max-width: 68%;}
 .prob-row:last-child {border-bottom: 0;}
-[data-testid="stMetric"] {background: #fff; border: 1px solid #e5eaf0; border-radius: 16px; padding: 14px 16px; box-shadow: 0 4px 16px rgba(16,24,40,.035);}
-[data-testid="stMetricLabel"] {font-size: 12px !important; color: #667085 !important;}
-[data-testid="stMetricValue"] {font-size: 26px !important; color: #101828 !important; letter-spacing: -0.6px;}
-div[data-testid="stSegmentedControl"] {margin: 4px 0 8px;}
-[data-testid="stDataFrame"] {border-radius: 14px; overflow: hidden;}
-@media (max-width: 800px) {
-  .block-container {padding: 16px 12px 40px;}
-  h1 {font-size: 28px;}
-  [data-testid="stMetricValue"] {font-size: 22px !important;}
+div[data-testid="stSegmentedControl"] {margin: 0 0 8px;}
+div[data-testid="stSegmentedControl"] button {font-size: 14px !important;}
+[data-testid="stPlotlyChart"] {background: #fff; border: 1px solid #e5eaf0; border-radius: 16px; padding: 4px 4px 0; overflow: hidden;}
+.katex-display {overflow-x: auto; overflow-y: hidden; margin: 0.4em 0 !important;}
+.table-title {font-size: 14px; font-weight: 600; color: #101828; margin: 12px 0 8px;}
+@media (max-width: 1100px) {
+  .kpi-row, .formula-grid {grid-template-columns: repeat(2, minmax(0, 1fr));}
+  .block-container {padding: 20px 16px 48px;}
+  h1 {font-size: 30px;}
+  .kpi-value {font-size: 22px;}
 }
 </style>
 """, unsafe_allow_html=True)
@@ -118,23 +147,126 @@ def demand_table(households: list[dict]) -> pd.DataFrame:
 
 
 def demand_figure(households: list[dict]) -> go.Figure:
-    labels = [household["label"] for household in households]
+    labels = [household["label"].replace("Household ", "HH") for household in households]
     fig = go.Figure()
     fig.add_bar(name="Regular", x=labels, y=[household["d_regular"] for household in households], marker_color="#1677ff")
     fig.add_bar(name="Premium", x=labels, y=[household["d_premium"] for household in households], marker_color="#ff8a1f")
-    fig.update_layout(
-        barmode="group",
-        height=320,
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-        margin=dict(l=48, r=16, t=36, b=40),
-        legend=dict(orientation="h", y=1.14),
-        yaxis_title="Capsules on weeks they bought it",
-        yaxis=dict(gridcolor="#e8edf3", zeroline=False),
-        xaxis=dict(zeroline=False),
-        font=dict(family="Inter, Arial, sans-serif", color="#172033"),
+    fig.update_layout(barmode="group")
+    apply_chart_layout(
+        fig,
+        height=360,
+        yaxis_title="Capsules per buying week",
+        left=64,
+        right=16,
+        top=16,
+        bottom=72,
     )
+    fig.update_yaxes(gridcolor="#e8edf3", zeroline=False)
+    fig.update_xaxes(zeroline=False)
     return fig
+
+
+def render_table(frame: pd.DataFrame) -> None:
+    """Full-width table. Cells wrap, so the page does not grow a horizontal scrollbar."""
+    headers = "".join(f"<th>{escape(str(column))}</th>" for column in frame.columns)
+    rows = []
+    for record in frame.itertuples(index=False):
+        cells = "".join(f"<td>{escape('' if value is None else str(value))}</td>" for value in record)
+        rows.append(f"<tr>{cells}</tr>")
+    st.markdown(
+        '<div class="table-wrap"><table class="grid"><thead><tr>'
+        + headers
+        + "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _pretty_number_text(text: str) -> str:
+    rounded = re.sub(r"\d+\.\d+", lambda match: f"{float(match.group()):.2f}", str(text))
+    return rounded.replace("<=", "≤").replace(">=", "≥").replace("max  ", "max ")
+
+
+def _short_menu(text: str) -> str:
+    parts = []
+    for piece in str(text).split(", "):
+        bits = piece.split()
+        if len(bits) >= 4 and bits[0] == "Household" and bits[2] == "buys":
+            parts.append(f"H{bits[1]} {bits[-1]}")
+    return " · ".join(parts) if parts else str(text)
+
+
+def _fmt2(value) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "" if value is None else str(value)
+    if number != number:
+        return "—"
+    return f"{number:,.2f}"
+
+
+def section_head(title: str, subtitle: str) -> None:
+    st.markdown(
+        f'<div class="section-head"><div class="card-title">{escape(title)}</div>'
+        f'<div class="card-sub">{escape(subtitle)}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _formula_article(kicker: str, blocks: list[tuple[str, str]], meta: list[str]) -> str:
+    body = "".join(f'<div class="{kind}">{escape(text)}</div>' for kind, text in blocks)
+    meta_html = "<br>".join(escape(line) for line in meta)
+    return (
+        '<article class="formula-card">'
+        f'<div class="formula-kicker">{escape(kicker)}</div>'
+        f"{body}"
+        f'<div class="formula-meta">{meta_html}</div>'
+        "</article>"
+    )
+
+
+def formula_cards(solved: dict, households: list[dict]) -> str:
+    coeff = solved["c"]
+    parts = []
+    if abs(float(coeff[0])) > 1e-12:
+        parts.append(f"{float(coeff[0]):.2f}R")
+    if abs(float(coeff[1])) > 1e-12:
+        parts.append(f"{float(coeff[1]):.2f}P")
+    objective = "max " + " + ".join(parts) if parts else "max 0"
+    cards = [
+        _formula_article(
+            "Objective",
+            [("formula-eq", objective)],
+            ["Weekly revenue from the fixed quantities"],
+        )
+    ]
+    for household in households:
+        blocks = []
+        for line in household["lines"]:
+            if line.get("fixed_threshold") is not None:
+                level = float(line["fixed_threshold"])
+                blocks.append(("formula-eq", f"P = {level:.2f}"))
+                blocks.append(("formula-lead", f"Premium when P ≤ {level:.2f}"))
+                blocks.append(("formula-lead", f"Regular when P ≥ {level:.2f}"))
+            elif line["kind"] == "switch":
+                blocks.append(("formula-lead", "Switches between Regular and Premium"))
+                blocks.append(("formula-eq", format_display_equation(line)))
+            else:
+                blocks.append(("formula-lead", "Stops buying above"))
+                blocks.append(("formula-eq", format_display_equation(line)))
+        cards.append(
+            _formula_article(
+                household["label"],
+                blocks,
+                [
+                    f"Regular quantity d = {household['d_regular']:.2f} (n = {household['n_regular']})",
+                    f"Premium quantity d = {household['d_premium']:.2f} (n = {household['n_premium']})",
+                ],
+            )
+        )
+    return f'<div class="formula-grid">{"".join(cards)}</div>'
 
 
 def result_card(solved: dict, households: list[dict], view: str) -> str:
@@ -150,7 +282,7 @@ def result_card(solved: dict, households: list[dict], view: str) -> str:
     tight = solved.get("tight") or []
     if tight:
         binding_rows = "".join(
-            f'<div class="prob-row"><span>Binding</span><b>{escape(name.split(" so that ", 1)[-1])}</b></div>'
+            f'<div class="prob-row"><span>Binding</span><b>{escape(_pretty_number_text(name.split(" so that ", 1)[-1]))}</b></div>'
             for name in tight
         )
     else:
@@ -181,13 +313,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("Shared Regular price", money(shared["R"]))
-k2.metric("Shared Premium price", money(shared["P"]))
-k3.metric("Total weekly revenue", money(shared["revenue"]))
-k4.metric("Assignment", short_assignment(shared["assignment"]))
+st.markdown(
+    '<div class="kpi-row">'
+    f'<div class="kpi"><div class="kpi-label">Shared Regular price</div><div class="kpi-value">{money(shared["R"])}</div></div>'
+    f'<div class="kpi"><div class="kpi-label">Shared Premium price</div><div class="kpi-value">{money(shared["P"])}</div></div>'
+    f'<div class="kpi"><div class="kpi-label">Total weekly revenue</div><div class="kpi-value">{money(shared["revenue"])}</div></div>'
+    f'<div class="kpi"><div class="kpi-label">Assignment</div><div class="kpi-value compact">{escape(short_assignment(shared["assignment"]))}</div></div>'
+    "</div>",
+    unsafe_allow_html=True,
+)
 
-st.markdown('<div class="card-title" style="margin-top:18px">Household</div>', unsafe_allow_html=True)
+st.markdown('<div class="switch-label">Household</div>', unsafe_allow_html=True)
 view = st.segmented_control(
     "Household",
     options=labels,
@@ -195,6 +331,8 @@ view = st.segmented_control(
     key="lp_view",
     label_visibility="collapsed",
     width="stretch",
+    format_func=lambda option: "All households" if option == ALL_VIEW else option,
+    wrap=True,
 )
 if view is None:
     view = ALL_VIEW
@@ -207,59 +345,62 @@ chart_note = (
     else "This household's line, the weeks they were observed, the feasible region, and their own optimum."
 )
 
-left, right = st.columns([1.65, 0.85], gap="medium")
+st.markdown(
+    f'<div class="section-head" style="margin-top:8px"><div class="card-title">{escape(chart_title)}</div>'
+    f'<div class="card-sub">{escape(chart_note)}</div></div>',
+    unsafe_allow_html=True,
+)
+left, right = st.columns([1.55, 0.9], gap="medium")
 with left:
-    st.markdown(
-        f'<div class="card"><div class="card-title">{chart_title}</div><div class="card-sub">{chart_note}</div></div>',
-        unsafe_allow_html=True,
-    )
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False, "responsive": True})
 with right:
     st.markdown(result_card(solved, shown, view), unsafe_allow_html=True)
     if solved.get("flat_price"):
         st.caption(solved["flat_price"])
 
-formula_cols = st.columns(1 + len(shown))
-with formula_cols[0]:
-    objective = escape(constraint_table(solved, shown).iloc[0]["Constraint"])
-    st.markdown(f'<div class="equation">Objective<br>{objective}</div>', unsafe_allow_html=True)
-for column, household in zip(formula_cols[1:], shown):
-    with column:
-        lines = "<br>".join(escape(line) for line in household_equations(household))
-        st.markdown(f'<div class="equation">{escape(household["label"])}<br>{lines}</div>', unsafe_allow_html=True)
+st.markdown(formula_cards(solved, shown), unsafe_allow_html=True)
 
 week6 = detail["frame"].loc[detail["frame"]["T"] == 6]
-if not week6.empty:
+threshold = next(
+    (
+        float(line["fixed_threshold"])
+        for household in detail["households"]
+        for line in household["lines"]
+        if line.get("fixed_threshold") is not None
+    ),
+    None,
+)
+if not week6.empty and threshold is not None:
     row = week6.iloc[0]
     st.markdown(
-        f'<p class="note">Household 2&apos;s line is set to the separating threshold because OLS misclassified week 6 '
-        f'(R = {row["P_Regular"]:.0f}, P = {row["P_Premium"]:.0f}).</p>',
+        '<div class="callout"><strong>Household 2.</strong> '
+        f"The line is the separating threshold P = {threshold:.2f}, because OLS misclassified week 6 "
+        f"(R = {row['P_Regular']:.0f}, P = {row['P_Premium']:.0f}).</div>",
         unsafe_allow_html=True,
     )
 
-st.markdown('<div style="height:18px"></div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="card"><div class="card-title">Constraints</div>'
-    '<div class="card-sub">Every side of each switching line, the price box, and the objective of the programme in view. '
-    "Binding is evaluated at that programme's optimum. A side marked “not in this programme” is the other side of the line.</div></div>",
-    unsafe_allow_html=True,
+section_head(
+    "Constraints",
+    "Every side of each switching line, the price box, and the objective of the programme in view. "
+    "Binding is evaluated at that programme's optimum. A side marked “not in this programme” is the other side of the line.",
 )
-constraints = constraint_table(solved, detail["households"] if view == ALL_VIEW else shown)
-st.dataframe(constraints, width="stretch", hide_index=True)
+constraints = constraint_table(solved, detail["households"] if view == ALL_VIEW else shown).copy()
+constraints["Constraint"] = constraints["Constraint"].map(_pretty_number_text)
+constraints = constraints.rename(columns={"In-sample accuracy": "Accuracy"})
+render_table(constraints)
 
-st.markdown('<div style="height:18px"></div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="card"><div class="card-title">Average weekly demand</div>'
-    '<div class="card-sub">d is the average number of capsules on weeks when that household bought the product. Weeks with a zero stay in the sample and are not part of this average.</div></div>',
-    unsafe_allow_html=True,
+section_head(
+    "Average weekly demand",
+    "d is the average number of capsules on weeks when that household bought the product. "
+    "Weeks with a zero stay in the sample and are not part of this average.",
 )
 demand_left, demand_right = st.columns([1, 1.15], gap="medium")
 with demand_left:
     demand = demand_table(detail["households"])
     styled = demand.copy()
-    styled["d Regular"] = styled["d Regular"].map(lambda value: f"{value:.4f}")
-    styled["d Premium"] = styled["d Premium"].map(lambda value: f"{value:.4f}")
-    st.dataframe(styled, width="stretch", hide_index=True)
+    styled["d Regular"] = styled["d Regular"].map(lambda value: f"{value:.2f}")
+    styled["d Premium"] = styled["d Premium"].map(lambda value: f"{value:.2f}")
+    render_table(styled)
 with demand_right:
     st.plotly_chart(demand_figure(detail["households"]), width="stretch", config={"displayModeBar": False, "responsive": True})
 
@@ -274,30 +415,42 @@ if view == ALL_VIEW:
 else:
     shock_note = f"{view}'s line is moved by {shock_label} and the shared programme is solved again. Only that household is shown."
 
-st.markdown('<div style="height:18px"></div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="card"><div class="card-title">Sensitivity, ±10%</div>'
-    f'<div class="card-sub">{escape(shock_note)} '
-    f"The next chart moves the household's own optimal price by {shock_label} and recomputes revenue from the same lines.</div></div>",
-    unsafe_allow_html=True,
+section_head(
+    "Sensitivity, ±10%",
+    f"{shock_note} The next chart moves the household's own optimal price by {shock_label} and recomputes revenue from the same lines.",
 )
 if not line_shocks.empty:
     st.plotly_chart(structural_sensitivity_figure(line_shocks), width="stretch", config={"displayModeBar": False, "responsive": True})
-    show = line_shocks[["Household", "parameter", "shock", "R_opt", "P_opt", "max_revenue", "delta_revenue", "assignment", "status"]].copy()
-    show.columns = ["Household", "Term", "Shock", "R", "P", "Revenue", "Δ revenue", "Assignment", "Status"]
-    st.dataframe(show.round(2), width="stretch", hide_index=True)
+    show = line_shocks[["Household", "parameter", "shock", "R_opt", "P_opt", "max_revenue", "delta_revenue", "assignment"]].copy()
+    show["parameter"] = show["parameter"].map(lambda text: _pretty_number_text(str(text).replace("threshold P = ", "threshold ")))
+    show["assignment"] = show["assignment"].map(_short_menu)
+    for column in ("R_opt", "P_opt", "max_revenue", "delta_revenue"):
+        show[column] = show[column].map(_fmt2)
+    show.columns = ["Household", "Term", "Shock", "R", "P", "Revenue", "Δ revenue", "Assignment"]
+    render_table(show)
 if not price_moves.empty:
     st.plotly_chart(price_move_figure(price_moves), width="stretch", config={"displayModeBar": False, "responsive": True})
 if view == ALL_VIEW:
     st.plotly_chart(bound_sensitivity_figure(bound_table), width="stretch", config={"displayModeBar": False, "responsive": True})
-    st.dataframe(bound_table.round(2), width="stretch", hide_index=True)
+    bounds_view = bound_table.copy()
+    bounds_view["assignment"] = bounds_view["assignment"].map(_short_menu)
+    for column in ("R_upper", "P_upper", "R_opt", "P_opt", "max_revenue"):
+        bounds_view[column] = bounds_view[column].map(_fmt2)
+    bounds_view = bounds_view.rename(columns={
+        "Price box": "Price box",
+        "R_upper": "R upper",
+        "P_upper": "P upper",
+        "R_opt": "R",
+        "P_opt": "P",
+        "max_revenue": "Revenue",
+        "assignment": "Assignment",
+    })
+    render_table(bounds_view)
 
-st.markdown('<div style="height:18px"></div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="card"><div class="card-title">Scenario comparison and regret</div>'
-    '<div class="card-sub">The scenario is a Regular / Premium price pair. Regret is a household&apos;s own LP revenue minus revenue at that menu. '
-    "The cell on a household's own optimum is zero.</div></div>",
-    unsafe_allow_html=True,
+section_head(
+    "Scenario comparison and regret",
+    "The scenario is a Regular / Premium price pair. Regret is a household's own LP revenue minus revenue at that menu. "
+    "The cell on a household's own optimum is zero.",
 )
 mean_r = round(float(detail["frame"]["P_Regular"].mean()), 2)
 mean_p = round(float(detail["frame"]["P_Premium"].mean()), 2)
@@ -324,12 +477,19 @@ if view != ALL_VIEW:
 else:
     regret_view = regret
 st.plotly_chart(regret_figure(regret_view), width="stretch", config={"displayModeBar": False, "responsive": True})
-rev_pivot = regret_view.pivot(index="Household", columns="Menu", values="revenue")
-reg_pivot = regret_view.pivot(index="Household", columns="Menu", values="regret")
-st.markdown("**Revenue by scenario (€)**")
-st.dataframe(rev_pivot.round(2), width="stretch")
-st.markdown("**Regret versus that household's LP optimum (€)**")
-st.dataframe(reg_pivot.round(2), width="stretch")
+_MENU = {
+    "Shared LP optimum": "Shared LP",
+    "Household 1 LP optimum": "HH1 LP",
+    "Household 2 LP optimum": "HH2 LP",
+    "Household 3 LP optimum": "HH3 LP",
+    "Scenario prices": "Scenario",
+}
+rev_pivot = regret_view.pivot(index="Household", columns="Menu", values="revenue").rename(columns=_MENU)
+reg_pivot = regret_view.pivot(index="Household", columns="Menu", values="regret").rename(columns=_MENU)
+st.markdown('<div class="table-title">Revenue by scenario (€)</div>', unsafe_allow_html=True)
+render_table(rev_pivot.reset_index().map(_fmt2))
+st.markdown('<div class="table-title">Regret versus that household\'s LP optimum (€)</div>', unsafe_allow_html=True)
+render_table(reg_pivot.reset_index().map(_fmt2))
 
 
 def _latex_line(slope: float, icept: float) -> str:
@@ -386,7 +546,7 @@ def render_methodology(detail: dict, bound_rows: pd.DataFrame) -> None:
 
     st.markdown('<div style="height:22px"></div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="card"><div class="card-title">Model & methodology</div>'
+        '<div class="section-head"><div class="card-title">Model & methodology</div>'
         '<div class="card-sub">How the prices on this page were obtained, from the weekly table to the optimum.</div></div>',
         unsafe_allow_html=True,
     )
