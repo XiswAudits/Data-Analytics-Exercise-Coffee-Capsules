@@ -37,15 +37,15 @@ The earlier successive linear programme of quadratic OLS demand has been retired
 
 ### Lines in the R–P plane
 
-A linear probability model (OLS of a 0/1 indicator on an intercept, `R`, and `P`) supplies the 0.5 contour. Premium is the side of a switching line where the fitted score is at least 0.5. A household that sometimes buys nothing also has a stop-buying line.
+A linear probability model (OLS of a 0/1 indicator on an intercept, `R`, and `P`) supplies the 0.5 contour for Household 1 and Household 3. Premium is the side of a switching line where the fitted score is at least 0.5. A household that sometimes buys nothing also has a stop-buying line.
 
-| Household | Fitted line | Reading |
+Household 2's OLS line (`P = 0.2305 R + 67.6909`) classified 10 of 11 weeks and put week 6 (R = 55, P = 80) on the Premium side. It is replaced by the horizontal threshold `P = 77.5`, which separates all 11 weeks: Premium weeks 1, 4, 5 and 10 have P from 70 to 75, and Regular weeks have P at least 80. Household 2 buys Premium when `P <= 77.5` and Regular when `P >= 77.5`.
+
+| Household | Line | Reading |
 |---|---|---|
 | Household 1 | `P = 1.6030 R − 9.2621` | Always buys. Premium at or below the line, Regular above it. In-sample accuracy 11/11. |
-| Household 2 | `P = 0.2305 R + 67.6909` | Always buys. Premium at or below the line, Regular above it. One week sits just on the wrong side (accuracy 10/11). |
+| Household 2 | `P = 77.5` | Always buys. Premium at or below the threshold, Regular at or above it. In-sample accuracy 11/11. |
 | Household 3 | `P = 0.1205 R + 79.2906` | Never buys Regular. Still buys Premium at or below the line, and stops above it. Accuracy 11/11. |
-
-These are the same pattern as a classroom sketch (Household 1 cares about the gap, Household 2 mostly about `P`, Household 3 has a reservation price) but the slopes come from this CSV.
 
 ### Shared linear programme
 
@@ -55,7 +55,7 @@ Every assignment of products is solved as its own LP with `scipy.optimize.linpro
 max  4.0000 R + 8.2857 P
 subject to
   Household 1 buys Premium:  P <= 1.6030 R − 9.2621
-  Household 2 buys Regular:  P >= 0.2305 R + 67.6909
+  Household 2 buys Regular:  P >= 77.5
   Household 3 still buys:    P <= 0.1205 R + 79.2906
   0 <= R <= 65
   0 <= P <= 100
@@ -63,7 +63,7 @@ subject to
 
 The upper bounds are the highest Regular and Premium prices in the experiment, so a price cannot run to infinity. Optimum: **R = €65.00**, **P = €87.12**, **revenue = €981.86**. It is a vertex: `R <= 65` and Household 3's buying line are both binding, and the constraints hold.
 
-Other feasible assignments earn less (about €933, €868, €830, €640, and €542). Two assignments are infeasible inside the price box.
+Other feasible assignments earn less (about €875, €868, €799, €640, and €542). Two assignments are infeasible inside the price box.
 
 ### Per-household programmes
 
@@ -79,7 +79,7 @@ Household 2's revenue does not depend on `P` once they are kept on the Regular s
 
 `python price_optimisation.py` checks that each reported optimum is a vertex, satisfies `A_ub x <= b_ub`, and that revenue equals `c · x`.
 
-The **Shared prices** tab draws all three lines on one graph (solid, dashed, long-dashed), shades the winning feasible region, draws the objective level, and labels `Optimal: P=…, R=…, Revenue=…`. The formulation sits under the graph. The **Per household** tab repeats that for each household and prints the equation and `d_i`. Sensitivity re-solves the shared LP after a ±10% shock to each line coefficient, moves each household's own prices by ±10%, and widens the price box. The regret matrix includes the shared optimum, each household optimum, and the slider scenario.
+The **Shared prices** tab draws all three lines on one graph (solid, dashed horizontal at 77.5, long-dashed), shades the winning feasible region, draws the objective level, and labels `Optimal: P=…, R=…, Revenue=…`. The formulation sits under the graph. The **Per household** tab repeats that for each household and prints the equation and `d_i`. Sensitivity re-solves the shared LP after a ±10% shock to each OLS line coefficient and to Household 2's 77.5 threshold, moves each household's own prices by ±10%, and widens the price box. The regret matrix includes the shared optimum, each household optimum, and the slider scenario.
 
 ## Dataset
 

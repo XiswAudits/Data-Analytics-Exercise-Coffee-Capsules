@@ -134,8 +134,9 @@ scenario_regret = selected_best["revenue"] - selected_now["revenue"]
 st.markdown(
     '<div class="card"><div class="card-title">Whiteboard linear programme</div>'
     '<div class="card-sub">Each household buys a fixed quantity of one product, so revenue is linear in the Regular price R and the Premium price P. '
-    'The product is chosen by a straight line fitted with OLS. Every product assignment is its own linear programme; the shared menu is the best feasible one. '
-    'This replaces the earlier successive linear programme of quadratic demand.</div></div>',
+    'The product is chosen by a straight line. Household 1 and Household 3 are fitted with OLS. '
+    'Household 2&apos;s line is set to the separating threshold P = 77.5 because OLS misclassified week 6 (R = 55, P = 80). '
+    'Every product assignment is its own linear programme; the shared menu is the best feasible one.</div></div>',
     unsafe_allow_html=True,
 )
 p1, p2, p3, p4 = st.columns(4)
@@ -168,7 +169,7 @@ with tab_shared:
     st.markdown("**Product assignments evaluated as separate linear programmes**")
     st.dataframe(pd.DataFrame(case_rows).sort_values("Revenue €", ascending=False), use_container_width=True, hide_index=True)
     st.caption(
-        "Household 1 is a solid line, Household 2 is dashed, Household 3 is long-dashed. "
+        "Household 1 is a solid line, Household 2 is a dashed horizontal line at P = 77.5, Household 3 is long-dashed. "
         "The shaded polygon is the feasible set of the winning assignment. "
         "The dotted green line is the objective level through the optimum."
     )
@@ -202,7 +203,7 @@ st.markdown(
 st.markdown('<div id="sensitivity"></div>', unsafe_allow_html=True)
 st.subheader("Structural test & sensitivity analysis")
 st.markdown(
-    "Each fitted line coefficient is moved by ±10% and the shared linear programme is solved again. "
+    "Each OLS line coefficient is moved by ±10%, and Household 2's threshold P = 77.5 is moved by ±10%. The shared linear programme is solved again. "
     "Separately, each household's own optimal price is moved ±10% and revenue is recomputed from the same lines. "
     "The last chart widens the upper price box past the highest price observed in the experiment."
 )
@@ -216,7 +217,7 @@ structural_show = lp_structural[lp_structural["kind"] == "line coefficient"][
 ].copy()
 structural_show.columns = [
     "Household whose line moved",
-    "Coefficient",
+    "Term",
     "Shock",
     "Shared R €",
     "Shared P €",

@@ -10,7 +10,9 @@ The earlier successive linear programme of quadratic OLS revenue has been
 retired. This module is the only price model the app uses.
 
 Class-board numbers are not copied from anywhere. Slopes, intercepts, and
-quantities are estimated here.
+quantities are estimated here. Household 2 is the exception: its switching
+line is the horizontal threshold P = 77.5, which separates every week. The
+OLS line misclassified week 6 (R = 55, P = 80).
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ Decision variables are the Regular price R and the Premium price P, both non-neg
 
 Each household buys a fixed quantity of one product (the average units bought on weeks they chose that product). Revenue is therefore linear: quantity times the price of the product they buy.
 
-The product is not a decision variable inside one programme. Each household is a straight line in the R-P plane, fitted by OLS (a linear probability model at the 0.5 contour). One side of the line is Premium, the other is Regular, and a household that sometimes buys nothing also has a stop-buying line. Each assignment of products to households is its own linear programme. The assignment with the highest feasible revenue is the shared menu.
+The product is not a decision variable inside one programme. Each household is a straight line in the R-P plane. Household 1 and Household 3 are fitted by OLS (a linear probability model at the 0.5 contour). Household 2's line is the horizontal threshold P = 77.5, because the OLS fit misclassified week 6 (R = 55, P = 80). One side of the line is Premium, the other is Regular, and a household that sometimes buys nothing also has a stop-buying line. Each assignment of products to households is its own linear programme. The assignment with the highest feasible revenue is the shared menu.
 
 `scipy.optimize.linprog` minimises, so the objective vector is the negated quantity vector. Upper price bounds are the highest Regular and Premium prices in the experiment, so a price cannot run off to infinity. Those bounds are data, not demand coefficients.
 """.strip()
@@ -48,6 +50,9 @@ LINE_COLOR = {
     "Household 3": "#ff8a1f",
 }
 _TOL = 1e-7
+# Premium at or below this Premium price, Regular at or above it.
+# Midpoint of the gap between HH2's highest Premium week (75) and lowest Regular week (80).
+HH2_SWITCH_THRESHOLD = 77.5
 
 
 def discover_households(frame: pd.DataFrame) -> list[str]:
@@ -91,7 +96,9 @@ def _score(line: dict, regular: float, premium: float) -> float:
 
 
 def line_equation(line: dict) -> str:
-    """0.5 contour written as P = slope·R + intercept, or a vertical R line."""
+    """0.5 contour written as P = slope·R + intercept, a horizontal P, or a vertical R line."""
+    if line.get("fixed_threshold") is not None:
+        return f"P = {float(line['fixed_threshold']):.4f}"
     intercept, b_r, b_p = line["intercept"], line["b_R"], line["b_P"]
     if abs(b_p) < 1e-12:
         if abs(b_r) < 1e-12:
@@ -114,8 +121,27 @@ def _halfspace(line: dict, side: str) -> tuple[np.ndarray, float]:
     raise ValueError(side)
 
 
+def horizontal_switch(level: float) -> dict:
+    """Switching line P = `level`. Premium when P is at or below it, Regular above."""
+    line = {
+        "intercept": float(level) + 0.5,
+        "b_R": 0.0,
+        "b_P": -1.0,
+        "r_squared": float("nan"),
+        "kind": "switch",
+        "fixed_threshold": float(level),
+    }
+    line["equation"] = line_equation(line)
+    return line
+
+
 def inequality_text(line: dict, side: str) -> str:
     """Human reading of the half-space, as a bound on P or on R."""
+    if line.get("fixed_threshold") is not None:
+        level = float(line["fixed_threshold"])
+        wants_below = (side == "high" and line["b_P"] < 0) or (side == "low" and line["b_P"] > 0)
+        op = "<=" if wants_below else ">="
+        return f"P {op} {level:.4f}"
     intercept, b_r, b_p = line["intercept"], line["b_R"], line["b_P"]
     if abs(b_p) < 1e-12:
         level = (0.5 - intercept) / b_r if abs(b_r) > 1e-12 else float("nan")
@@ -164,10 +190,13 @@ def load_problem(csv_path: str = DEFAULT_CSV) -> dict:
             lines.append(stop)
         buyers = bought
         if buyers.sum() >= 2 and bought_reg[buyers].any() and bought_prem[buyers].any():
-            switch_target = bought_prem[buyers].astype(float)
-            switch = _fit_lpm(prices[buyers], switch_target)
-            switch["kind"] = "switch"
-            switch["equation"] = line_equation(switch)
+            if label == "Household 2":
+                switch = horizontal_switch(HH2_SWITCH_THRESHOLD)
+            else:
+                switch_target = bought_prem[buyers].astype(float)
+                switch = _fit_lpm(prices[buyers], switch_target)
+                switch["kind"] = "switch"
+                switch["equation"] = line_equation(switch)
             lines.append(switch)
         predicted = [
             predict_product({"lines": lines, "only_product": "Premium" if not bought_reg.any() else None}, r, p)
@@ -331,6 +360,35 @@ def _is_vertex(matrix: np.ndarray, limits: np.ndarray, point: np.ndarray) -> boo
     return False
 
 
+def _prefer_matching_vertex(
+    households: list[dict],
+    assignment: dict[str, str],
+    coeff: np.ndarray,
+    point: np.ndarray,
+    revenue: float,
+    vertices: list[np.ndarray],
+) -> np.ndarray:
+    """Keep a flat-edge optimum on the side of the line that matches its product.
+
+    P = 77.5 is Premium (P <= 77.5) and also meets a Regular constraint (P >= 77.5).
+    If HiGHS sits on that boundary for a Regular assignment, report another optimal
+    vertex where the line says Regular, such as P = 100.
+    """
+
+    def matches(pt: np.ndarray) -> bool:
+        return all(
+            predict_product(household, float(pt[0]), float(pt[1])) == assignment[household["label"]]
+            for household in households
+        )
+
+    if matches(point):
+        return point
+    candidates = [vertex for vertex in vertices if abs(float(coeff @ vertex) - revenue) <= 1e-4 and matches(vertex)]
+    if not candidates:
+        return point
+    return max(candidates, key=lambda vertex: (float(vertex[1]), float(vertex[0])))
+
+
 def solve_assignment(households: list[dict], assignment: dict[str, str], bounds: dict) -> dict:
     """One linear programme: this product assignment, maximised with linprog."""
     system = build_constraint_system(households, assignment, bounds)
@@ -369,6 +427,9 @@ def solve_assignment(households: list[dict], assignment: dict[str, str], bounds:
         return solved
     point = np.asarray(result.x, dtype=float)
     revenue = float(coeff @ point)
+    vertices = _vertices_from_constraints(system["A_ub"], system["b_ub"])
+    point = _prefer_matching_vertex(households, assignment, coeff, point, revenue, vertices)
+    revenue = float(coeff @ point)
     tight_idx = _tight_constraints(system["A_ub"], system["b_ub"], point)
     solved.update(
         {
@@ -378,11 +439,11 @@ def solve_assignment(households: list[dict], assignment: dict[str, str], bounds:
             "vertex": _is_vertex(system["A_ub"], system["b_ub"], point),
             "tight": [system["names"][i] for i in tight_idx],
             "satisfied": bool(np.all(system["A_ub"] @ point <= system["b_ub"] + 1e-6)),
-            "vertices": _vertices_from_constraints(system["A_ub"], system["b_ub"]),
+            "vertices": vertices,
             "flat_price": (
-                "Premium price is not in this objective, so revenue is unchanged along that edge; the solver returns a vertex."
+                "Premium price is not in this objective, so revenue is unchanged along that edge; a vertex of that edge is reported."
                 if abs(coeff[1]) < 1e-12
-                else "Regular price is not in this objective, so revenue is unchanged along that edge; the solver returns a vertex."
+                else "Regular price is not in this objective, so revenue is unchanged along that edge; a vertex of that edge is reported."
                 if abs(coeff[0]) < 1e-12
                 else ""
             ),
@@ -480,6 +541,12 @@ def household_equations(household: dict) -> list[str]:
     """One readable equation per fitted line, plus the fixed quantities."""
     text = []
     for line in household["lines"]:
+        if line.get("fixed_threshold") is not None:
+            level = float(line["fixed_threshold"])
+            text.append(
+                f"P = {level:.4f}: Premium when P <= {level:.4f}, Regular when P >= {level:.4f}"
+            )
+            continue
         if line["kind"] == "switch":
             role = "switches between Regular and Premium on"
         else:
@@ -521,38 +588,79 @@ def _shock_households(households: list[dict], label: str, field: str, factor: fl
         }
         if clone["label"] == label:
             for line in clone["lines"]:
+                if "fixed_threshold" in line or field not in line:
+                    continue
                 line[field] = line[field] * factor
                 line["equation"] = line_equation(line)
         shocked.append(clone)
     return shocked
 
 
+def _shock_threshold(households: list[dict], label: str, level: float) -> list[dict]:
+    """Replace one household's horizontal threshold and leave every other line alone."""
+    shocked = []
+    for household in households:
+        clone = {
+            **household,
+            "lines": [dict(line) for line in household["lines"]],
+        }
+        if clone["label"] == label:
+            clone["lines"] = [
+                horizontal_switch(level) if "fixed_threshold" in line else line
+                for line in clone["lines"]
+            ]
+        shocked.append(clone)
+    return shocked
+
+
+def _sensitivity_row(household_label: str, parameter: str, shock: str, best: dict | None, base_revenue: float) -> dict:
+    revenue = best["revenue"] if best else float("nan")
+    return {
+        "Household": household_label,
+        "kind": "line coefficient",
+        "parameter": parameter,
+        "shock": shock,
+        "R_opt": best["R"] if best else float("nan"),
+        "P_opt": best["P"] if best else float("nan"),
+        "max_revenue": revenue,
+        "delta_revenue": revenue - base_revenue if best else float("nan"),
+        "assignment": best["assignment_label"] if best else "infeasible",
+        "status": "optimal" if best else "infeasible",
+    }
+
+
 def structural_sensitivity(detail: dict, pct: float = 0.10) -> pd.DataFrame:
-    """Re-solve after shocking each fitted line coefficient, and after moving prices."""
+    """Re-solve after shocking each fitted line, and after moving prices.
+
+    OLS lines are shocked on intercept and on each slope. A fixed threshold,
+    such as Household 2's P = 77.5, is shocked by moving that level ±pct.
+    """
     rows = []
     base = detail["shared"]["best"]
     bounds = detail["bounds"]
     fields = (("intercept", "intercept"), ("b_R", "slope on R"), ("b_P", "slope on P"))
     for household in detail["households"]:
-        for field, pretty in fields:
+        fixed = [line for line in household["lines"] if "fixed_threshold" in line]
+        fitted = [line for line in household["lines"] if "fixed_threshold" not in line]
+        if fitted:
+            for field, pretty in fields:
+                for sign, factor in (("+", 1.0 + pct), ("−", 1.0 - pct)):
+                    shocked = _shock_households(detail["households"], household["label"], field, factor)
+                    solved = best_programme(shocked, bounds)
+                    rows.append(_sensitivity_row(household["label"], pretty, f"{sign}{pct:.0%}", solved["best"], base["revenue"]))
+        for line in fixed:
+            level = float(line["fixed_threshold"])
             for sign, factor in (("+", 1.0 + pct), ("−", 1.0 - pct)):
-                shocked = _shock_households(detail["households"], household["label"], field, factor)
+                shocked = _shock_threshold(detail["households"], household["label"], level * factor)
                 solved = best_programme(shocked, bounds)
-                best = solved["best"]
-                revenue = best["revenue"] if best else float("nan")
                 rows.append(
-                    {
-                        "Household": household["label"],
-                        "kind": "line coefficient",
-                        "parameter": pretty,
-                        "shock": f"{sign}{pct:.0%}",
-                        "R_opt": best["R"] if best else float("nan"),
-                        "P_opt": best["P"] if best else float("nan"),
-                        "max_revenue": revenue,
-                        "delta_revenue": revenue - base["revenue"] if best else float("nan"),
-                        "assignment": best["assignment_label"] if best else "infeasible",
-                        "status": "optimal" if best else "infeasible",
-                    }
+                    _sensitivity_row(
+                        household["label"],
+                        f"threshold P = {level:.4f}",
+                        f"{sign}{pct:.0%}",
+                        solved["best"],
+                        base["revenue"],
+                    )
                 )
         own = next(item["programme"]["best"] for item in detail["per_household"] if item["household"]["label"] == household["label"])
         for price_name, index in (("R", 0), ("P", 1)):
@@ -807,7 +915,7 @@ def structural_sensitivity_figure(table: pd.DataFrame) -> go.Figure:
         )
     fig.update_layout(
         barmode="group",
-        title="Shared revenue change when a fitted line coefficient moves ±10%",
+        title="Shared revenue change when a fitted line moves ±10%",
         yaxis_title="Change in shared revenue (€)",
         plot_bgcolor="white",
         paper_bgcolor="white",
