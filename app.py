@@ -1,15 +1,20 @@
+"""Streamlit page for the whiteboard price linear programme.
+
+The logistic Buy / No-Purchase classifier is not part of this page. Prices,
+quantities, lines, and optima all come from `price_optimisation.py`.
+"""
+
+from html import escape
 from pathlib import Path
 
-import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
-from sklearn.linear_model import LogisticRegression
+import streamlit as st
 
 from price_optimisation import (
-    FORMULATION_SUMMARY,
     bound_sensitivity,
     bound_sensitivity_figure,
+    constraint_table,
     household_equations,
     household_figure,
     optimise_prices_detailed,
@@ -22,327 +27,293 @@ from price_optimisation import (
     structural_sensitivity_figure,
 )
 
-# Resolved from this file so both `streamlit run app.py` and the legacy
-# analysis/pricing_optimization/app.py shim find the dataset.
 DATA_CSV = str(Path(__file__).resolve().parent / "coffee_capsules_data.csv")
+ALL_VIEW = "All households (shared prices)"
 
-st.set_page_config(page_title="Coffee Capsules — Demand Model", page_icon="☕", layout="wide", initial_sidebar_state="collapsed")
-
-@st.cache_data(show_spinner=False)
-def household_price_lp(csv_name: str):
-    """Shared and per-household linear programmes. Cached so sliders do not refit."""
-    detail = optimise_prices_detailed(csv_name)
-    structural = structural_sensitivity(detail, pct=0.10)
-    bounds = bound_sensitivity(detail)
-    return detail, structural, bounds
-RAW = pd.read_csv(DATA_CSV)
-HOUSEHOLDS = {"Household 1": ("HH1_Regular", "HH1_Premium"), "Household 2": ("HH2_Regular", "HH2_Premium"), "Household 3": ("HH3_Regular", "HH3_Premium")}
-CHOICES = ["Regular", "Premium", "No Purchase"]
-COLORS = {"Regular":"#1677ff", "Premium":"#ff8a1f", "No Purchase":"#aab4c0"}
-BASELINE_R, BASELINE_P = 42, 93
-
-def build_observations():
-    rows=[]
-    for h,(rc,pc) in HOUSEHOLDS.items():
-        for _,r in RAW.iterrows():
-            rq,pq=int(r[rc]),int(r[pc]); c="Regular" if rq>0 else "Premium" if pq>0 else "No Purchase"
-            rows.append({"Household":h,"T":int(r["T"]),"P_Regular":float(r["P_Regular"]),"P_Premium":float(r["P_Premium"]),"Regular":rq,"Premium":pq,"Choice":c,"Quantity":rq+pq})
-    return pd.DataFrame(rows)
-OBS=build_observations(); PR_MEAN,PR_STD=OBS.P_Regular.mean(),OBS.P_Regular.std(ddof=0); PP_MEAN,PP_STD=OBS.P_Premium.mean(),OBS.P_Premium.std(ddof=0)
-
-def features(f):
-    return np.column_stack([(f.P_Regular.to_numpy()-PR_MEAN)/PR_STD,(f.P_Premium.to_numpy()-PP_MEAN)/PP_STD,(f.Household=="Household 2").astype(float).to_numpy(),(f.Household=="Household 3").astype(float).to_numpy()])
-purchase_model=LogisticRegression(C=1,max_iter=5000).fit(features(OBS),(OBS.Choice!="No Purchase").astype(int)); BUYERS=OBS[OBS.Choice!="No Purchase"]; choice_model=LogisticRegression(C=1,max_iter=5000).fit(features(BUYERS),(BUYERS.Choice=="Premium").astype(int))
-
-def probabilities(h,pr,pp):
-    x=pd.DataFrame({"Household":[h],"P_Regular":[pr],"P_Premium":[pp]}); buy=purchase_model.predict_proba(features(x))[0,1]; prem=choice_model.predict_proba(features(x))[0,1]
-    return {"No Purchase":1-buy,"Regular":buy*(1-prem),"Premium":buy*prem,"Buy":buy,"Premium | Buy":prem}
-
-def boundary(model,h):
-    c=model.coef_[0]; he=c[2] if h=="Household 2" else c[3] if h=="Household 3" else 0
-    if abs(c[1])<1e-12:return np.nan,np.nan
-    sz=-c[0]/c[1]; iz=-(model.intercept_[0]+he)/c[1]; slope=sz*PP_STD/PR_STD; intercept=PP_MEAN+PP_STD*iz-slope*PR_MEAN
-    return float(slope),float(intercept)
-
-def decision_map(h,pr,pp):
-    ps,pi=boundary(purchase_model,h); cs,ci=boundary(choice_model,h); xs=np.linspace(30,70,180); ys=np.linspace(55,145,180); xx,yy=np.meshgrid(xs,ys); grid=pd.DataFrame({"Household":h,"P_Regular":xx.ravel(),"P_Premium":yy.ravel()}); buy=purchase_model.predict_proba(features(grid))[:,1].reshape(xx.shape); prem=choice_model.predict_proba(features(grid))[:,1].reshape(xx.shape); z=np.where(buy<.5,2,np.where(prem>=.5,1,0))
-    fig=go.Figure(go.Heatmap(x=xs,y=ys,z=z,zmin=0,zmax=2,colorscale=[[0,"rgba(22,119,255,.12)"],[.33,"rgba(22,119,255,.12)"],[.34,"rgba(255,138,31,.10)"],[.66,"rgba(255,138,31,.10)"],[.67,"rgba(170,180,192,.12)"],[1,"rgba(170,180,192,.12)"]],showscale=False,hoverinfo="skip"))
-    for slope,intercept,name,dash,color in [(ps,pi,"Purchase boundary","dash","#1677ff"),(cs,ci,"Regular / Premium","dash","#ff8a1f")]:
-        if np.isfinite(slope) and np.isfinite(intercept):
-            line=slope*xs+intercept; mask=np.isfinite(line)&(line>=ys.min())&(line<=ys.max())
-            if mask.any(): fig.add_trace(go.Scatter(x=xs[mask],y=line[mask],mode="lines",name=name,line={"color":color,"width":2,"dash":dash}))
-    hd=OBS[OBS.Household==h]
-    for ch in CHOICES:
-        s=hd[hd.Choice==ch]
-        if not s.empty: fig.add_trace(go.Scatter(x=s.P_Regular,y=s.P_Premium,mode="markers",name=ch,marker={"size":10,"color":COLORS[ch],"line":{"color":"white","width":1.5}},customdata=s[["T","Quantity"]].to_numpy(),hovertemplate="<b>%{fullData.name}</b><br>Week %{customdata[0]}<br>Regular €%{x:.0f}<br>Premium €%{y:.0f}<br>Quantity %{customdata[1]}<extra></extra>"))
-    sc=probabilities(h,pr,pp); pred=max(CHOICES,key=sc.get); fig.add_trace(go.Scatter(x=[pr],y=[pp],mode="markers",name="Scenario",marker={"symbol":"star","size":18,"color":"#172033","line":{"color":"white","width":2}}))
-    fig.update_layout(height=500,margin={"l":10,"r":10,"t":20,"b":10},paper_bgcolor="white",plot_bgcolor="white",font={"family":"Inter, Arial, sans-serif","color":"#172033"},xaxis={"title":"Regular price (€)","range":[30,70],"gridcolor":"#e8edf3","zeroline":False,"fixedrange":True},yaxis={"title":"Premium price (€)","range":[55,145],"gridcolor":"#e8edf3","zeroline":False,"fixedrange":True},legend={"orientation":"h","y":1.04,"x":0},hoverlabel={"bgcolor":"white"})
-    return fig,sc,pred,(ps,pi),(cs,ci)
-
-def qty(s):
-    r=s.loc[s.Choice=="Regular","Regular"]; p=s.loc[s.Choice=="Premium","Premium"]; return float(s.Quantity.mean()),float(r.mean()) if len(r) else 0,float(p.mean()) if len(p) else 0
+st.set_page_config(page_title="Revenue-maximising prices", page_icon="☕", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-:root{--ink:#101828;--muted:#667085;--line:#e5eaf0;--page:#f3f5f7;--blue:#1677ff;--orange:#ff8a1f}
-html,body,[class*="css"],.stApp{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important}.stApp,[data-testid="stAppViewContainer"]{background:var(--page);color:var(--ink)}[data-testid="stSidebar"]{display:none}.block-container{max-width:1460px;padding:20px 28px 54px}
-.top-shell{background:rgba(255,255,255,.98);border:1px solid var(--line);border-radius:22px;padding:13px 18px;margin-bottom:16px;box-shadow:0 8px 24px rgba(16,24,40,.035)}.brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700;color:#172033}.brand-icon{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;color:white;background:linear-gradient(145deg,#ffb21a,#ff8a1f);font-size:16px}.nav{display:flex;gap:26px;align-items:center;justify-content:center}.nav a{color:#344054;text-decoration:none;font-size:13px}.nav a.active{background:#172033;color:white;padding:9px 16px;border-radius:11px;box-shadow:0 4px 12px rgba(16,24,40,.12)}.profile{width:34px;height:34px;border:1px solid var(--line);border-radius:50%;display:grid;place-items:center;color:#344054}
-.scenario-shell{background:#fff;border:1px solid var(--line);border-radius:18px;padding:13px 16px;margin-bottom:26px;box-shadow:0 5px 18px rgba(16,24,40,.025)}.scenario-title{font-size:12px;font-weight:600;color:#344054;margin-bottom:7px}.scenario-help{font-size:11px;color:#98a2b3}.scenario-shell [data-testid="stSlider"]{padding-bottom:0}.scenario-shell [data-testid="stSelectbox"]{padding-bottom:0}.scenario-shell [data-testid="stWidgetLabel"]{font-size:11px!important;color:#667085!important}.scenario-shell [data-baseweb="slider"] div[role="slider"]{background:#1677ff!important;border-color:#1677ff!important}
-.eyebrow{display:inline-block;padding:7px 11px;border-radius:999px;background:#edf3f9;color:#4b6380;font-size:11px;font-weight:600;margin-bottom:10px}.hero{margin:4px 0 24px}.hero-copy{max-width:780px}.hero h1{font-size:38px;line-height:1.05;letter-spacing:-1.8px;margin:0 0 12px;color:#101828;font-weight:600}.hero p{margin:0;color:#667085;font-size:14px;line-height:1.6}.card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:18px;box-shadow:0 5px 20px rgba(16,24,40,.025);height:100%}.card-title{color:#101828;font-size:13px;font-weight:600;margin-bottom:5px}.card-sub{color:#98a2b3;font-size:11px;line-height:1.5}.kpi-value{color:#101828;font-size:26px;font-weight:600;letter-spacing:-1px;margin-top:6px}.insight{background:linear-gradient(145deg,#172033,#223a53);color:#fff;border-radius:18px;padding:20px;min-height:180px;box-shadow:0 14px 30px rgba(23,32,51,.14)}.insight .eyebrow{background:rgba(255,255,255,.10);color:#dbeafe}.insight h2{color:white;font-size:27px;margin:5px 0;letter-spacing:-1px}.insight p{color:#cbd5e1;font-size:12px;margin:0}.prob-row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.10);font-size:12px}.prob-row:last-child{border-bottom:0}.pill{display:inline-block;padding:5px 9px;border-radius:999px;font-size:10px;font-weight:600;background:#f2f4f7;color:#475467;margin:2px 2px 0 0}.equation{background:#f8fafc;border:1px solid #e7edf3;border-radius:12px;padding:11px 13px;margin-top:9px;color:#172033;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}.info{background:#f5f9ff;border:1px solid #dcecff;border-radius:14px;padding:13px 15px;color:#475467;font-size:11px;line-height:1.5}[data-testid="stMetric"]{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px 15px;box-shadow:0 4px 16px rgba(16,24,40,.025)}[data-testid="stMetricLabel"]{font-size:11px!important;color:#667085!important}[data-testid="stMetricValue"]{font-size:25px!important;color:#101828!important}div[data-testid="stExpander"]{border:1px solid var(--line);border-radius:14px;background:#fff}[data-testid="stDataFrame"]{border-radius:14px;overflow:hidden}
-@media(max-width:900px){.block-container{padding:16px 16px 38px}.nav{gap:13px}.hero h1{font-size:32px}.scenario-shell{padding:12px}.scenario-title{margin-bottom:4px}}
-@media(max-width:640px){.block-container{padding:10px 10px 30px}.top-shell{border-radius:18px;padding:12px}.nav{display:none}.brand{font-size:16px}.hero h1{font-size:27px;letter-spacing:-1px}.hero p{font-size:13px}.card{border-radius:15px;padding:14px}.insight{border-radius:15px}[data-testid="stMetric"]{padding:11px 12px}[data-testid="stMetricValue"]{font-size:21px!important}.js-plotly-plot .plotly{width:100%!important}}
+html, body, [class*="css"], .stApp {font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;}
+.stApp, [data-testid="stAppViewContainer"] {background: #f3f5f7; color: #101828;}
+[data-testid="stSidebar"] {display: none;}
+.block-container {max-width: 1180px; padding: 28px 28px 64px;}
+h1 {font-size: 36px; line-height: 1.08; letter-spacing: -1.4px; font-weight: 600; color: #101828; margin: 0 0 8px;}
+.lede {color: #667085; font-size: 15px; line-height: 1.55; max-width: 720px; margin: 0 0 22px;}
+.eyebrow {display: inline-block; padding: 6px 10px; border-radius: 999px; background: #edf3f9; color: #4b6380; font-size: 11px; font-weight: 600; margin-bottom: 10px;}
+.card {background: #fff; border: 1px solid #e5eaf0; border-radius: 18px; padding: 16px 18px; box-shadow: 0 5px 20px rgba(16,24,40,.035); height: 100%;}
+.card-title {color: #101828; font-size: 14px; font-weight: 600; margin-bottom: 4px;}
+.card-sub {color: #98a2b3; font-size: 12px; line-height: 1.5;}
+.equation {background: #f8fafc; border: 1px solid #e7edf3; border-radius: 12px; padding: 12px 14px; color: #172033; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.45;}
+.note {color: #667085; font-size: 12px; line-height: 1.5; margin: 8px 0 0;}
+.insight {background: linear-gradient(160deg, #172033, #24384f); color: #fff; border-radius: 18px; padding: 22px 20px; min-height: 100%; box-shadow: 0 14px 30px rgba(23,32,51,.16);}
+.insight .eyebrow {background: rgba(255,255,255,.12); color: #dbeafe;}
+.insight h2 {color: white; font-size: 28px; letter-spacing: -0.8px; margin: 6px 0 4px; font-weight: 600;}
+.insight .sub {color: #cbd5e1; font-size: 13px; margin: 0 0 12px;}
+.prob-row {display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.1); font-size: 13px;}
+.prob-row:last-child {border-bottom: 0;}
+[data-testid="stMetric"] {background: #fff; border: 1px solid #e5eaf0; border-radius: 16px; padding: 14px 16px; box-shadow: 0 4px 16px rgba(16,24,40,.035);}
+[data-testid="stMetricLabel"] {font-size: 12px !important; color: #667085 !important;}
+[data-testid="stMetricValue"] {font-size: 26px !important; color: #101828 !important; letter-spacing: -0.6px;}
+div[data-testid="stSegmentedControl"] {margin: 4px 0 8px;}
+[data-testid="stDataFrame"] {border-radius: 14px; overflow: hidden;}
+@media (max-width: 800px) {
+  .block-container {padding: 16px 12px 40px;}
+  h1 {font-size: 28px;}
+  [data-testid="stMetricValue"] {font-size: 22px !important;}
+}
 </style>
-""",unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-st.markdown("""<div class="top-shell"><div style="display:flex;align-items:center;justify-content:space-between;gap:18px"><div class="brand"><span class="brand-icon">☕</span> Coffee Capsule Lab</div><div class="nav"><a class="active" href="#home">Home</a><a href="#model">Model</a><a href="#prices">Prices</a><a href="#data">Data</a><a href="#methodology">Methodology</a><a href="#insights">Insights</a></div><div class="profile">◦</div></div></div><div id="home"></div>""",unsafe_allow_html=True)
 
-st.markdown('<div class="scenario-shell"><div class="scenario-title">Scenario controls</div><div class="scenario-help">Choose a household and test a Regular / Premium price pair. These controls are intentionally separated from the navigation.</div></div>',unsafe_allow_html=True)
-sc1,sc2,sc3=st.columns([1.1,1,1])
-with sc1: household=st.selectbox("Household",list(HOUSEHOLDS),key="root_household")
-with sc2: regular_price=st.slider("Regular price (€)",30,70,BASELINE_R,key="root_regular_price")
-with sc3: premium_price=st.slider("Premium price (€)",65,105,BASELINE_P,key="root_premium_price")
+@st.cache_data(show_spinner=False)
+def household_price_lp(csv_name: str):
+    """Shared and per-household programmes. Cached so the view switch does not refit."""
+    detail = optimise_prices_detailed(csv_name)
+    structural = structural_sensitivity(detail, pct=0.10)
+    bounds = bound_sensitivity(detail)
+    return detail, structural, bounds
 
-fig,scenario,predicted,purchase_boundary,choice_boundary=decision_map(household,regular_price,premium_price)
-avg,qr,qp=qty(OBS[OBS.Household==household])
 
-st.markdown(f'<div class="hero"><div class="hero-copy"><div class="eyebrow">Two-stage logistic classifier</div><h1>Coffee Capsules<br>Purchase & Choice Analysis</h1><p>Explore how Regular and Premium prices change the estimated probability of purchasing, choosing Premium, or not purchasing for each household.</p></div></div>',unsafe_allow_html=True)
+def money(value: float) -> str:
+    return f"€{value:,.2f}"
 
-m1,m2,m3,m4=st.columns(4);m1.metric("Purchase probability",f"{scenario['Buy']:.0%}");m2.metric("P(Regular)",f"{scenario['Regular']:.0%}");m3.metric("P(Premium)",f"{scenario['Premium']:.0%}");m4.metric("P(No Purchase)",f"{scenario['No Purchase']:.0%}")
 
-st.markdown('<div id="model"></div>',unsafe_allow_html=True);left,right=st.columns([1.65,.8],gap="medium")
-with left:
-    st.markdown('<div class="card"><div class="card-title">Decision boundaries</div><div class="card-sub">Observed weekly choices and the 50% prediction boundaries implied by the two logistic stages.</div></div>',unsafe_allow_html=True);st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False,"responsive":True})
-with right:
-    st.markdown(f'<div class="insight"><div class="eyebrow">Scenario result</div><h2>{predicted}</h2><p>At Regular €{regular_price} and Premium €{premium_price}</p><div style="height:12px"></div><div class="prob-row"><span>Regular</span><b>{scenario["Regular"]:.1%}</b></div><div class="prob-row"><span>Premium</span><b>{scenario["Premium"]:.1%}</b></div><div class="prob-row"><span>No Purchase</span><b>{scenario["No Purchase"]:.1%}</b></div></div>',unsafe_allow_html=True);st.write("");st.markdown(f'<div class="card"><div class="card-title">Demand snapshot</div><div class="card-sub">Observed quantity across the 11 weeks</div><div class="kpi-value">{avg:.2f}</div><div class="card-sub">capsules / week</div><div style="height:8px"></div><span class="pill">Regular when purchased&nbsp; {qr:.2f}</span><span class="pill">Premium when purchased&nbsp; {qp:.2f}</span></div>',unsafe_allow_html=True)
+def short_assignment(assignment: dict) -> str:
+    return " · ".join(f"H{label.split()[-1]} {product}" for label, product in assignment.items())
 
-st.markdown('<div id="insights"></div>',unsafe_allow_html=True);i1,i2,i3=st.columns(3)
-with i1: st.markdown('<div class="card"><div class="card-title">Purchase stage</div><div class="card-sub">Estimates P(Buy) using Regular price, Premium price, and household indicators.</div><div class="equation">logit(P(Buy)) = β₀ + βᵣzᵣ + βₚzₚ + household effects</div></div>',unsafe_allow_html=True)
-with i2: st.markdown('<div class="card"><div class="card-title">Choice stage</div><div class="card-sub">Among observed buyers, estimates P(Premium | Buy).</div><div class="equation">logit(P(Premium | Buy)) = γ₀ + γᵣzᵣ + γₚzₚ + household effects</div></div>',unsafe_allow_html=True)
-with i3: st.markdown(f'<div class="card"><div class="card-title">Current household</div><div class="card-sub">{household} · 11 weekly observations</div><div class="kpi-value">{max(scenario["Regular"],scenario["Premium"],scenario["No Purchase"]):.0%}</div><div class="card-sub">highest predicted choice probability</div></div>',unsafe_allow_html=True)
 
-st.markdown('<div id="prices"></div>', unsafe_allow_html=True)
-st.subheader("Revenue-maximising prices")
-# One linear programme in R and P. The successive quadratic LP has been retired.
-# Costs are not in the data, so the objective is revenue at fixed purchase quantities.
-lp_detail, lp_structural, lp_bounds = household_price_lp(DATA_CSV)
-shared = lp_detail["shared"]["best"]
-selected = next(item for item in lp_detail["per_household"] if item["household"]["label"] == household)
-selected_best = selected["programme"]["best"]
-selected_now = revenue_of(selected["household"], regular_price, premium_price)
-scenario_regret = selected_best["revenue"] - selected_now["revenue"]
-st.markdown(
-    '<div class="card"><div class="card-title">Whiteboard linear programme</div>'
-    '<div class="card-sub">Each household buys a fixed quantity of one product, so revenue is linear in the Regular price R and the Premium price P. '
-    'The product is chosen by a straight line. Household 1 and Household 3 are fitted with OLS. '
-    'Household 2&apos;s line is set to the separating threshold P = 77.5 because OLS misclassified week 6 (R = 55, P = 80). '
-    'Every product assignment is its own linear programme; the shared menu is the best feasible one.</div></div>',
-    unsafe_allow_html=True,
-)
-p1, p2, p3, p4 = st.columns(4)
-p1.metric("Shared Regular price", f"€{shared['R']:.2f}")
-p2.metric("Shared Premium price", f"€{shared['P']:.2f}")
-p3.metric("Shared revenue", f"€{shared['revenue']:.2f}")
-p4.metric(f"{household} at the sliders", f"€{selected_now['revenue']:.2f}")
+def active_programme(detail: dict, view: str) -> tuple[dict, list[dict], str]:
+    """Solved programme, the households it is about, and a chart title."""
+    if view == ALL_VIEW:
+        return detail["shared"]["best"], detail["households"], "Shared prices"
+    item = next(entry for entry in detail["per_household"] if entry["household"]["label"] == view)
+    return item["programme"]["best"], [item["household"]], view
 
-tab_shared, tab_household = st.tabs(["Shared prices", "Per household"])
-with tab_shared:
-    st.plotly_chart(
-        shared_figure(lp_detail),
-        use_container_width=True,
-        config={"displayModeBar": False, "responsive": True},
+
+def demand_table(households: list[dict]) -> pd.DataFrame:
+    rows = []
+    for household in households:
+        rows.append({
+            "Household": household["label"],
+            "d Regular": household["d_regular"],
+            "Regular weeks": household["n_regular"],
+            "d Premium": household["d_premium"],
+            "Premium weeks": household["n_premium"],
+        })
+    return pd.DataFrame(rows)
+
+
+def demand_figure(households: list[dict]) -> go.Figure:
+    labels = [household["label"] for household in households]
+    fig = go.Figure()
+    fig.add_bar(name="Regular", x=labels, y=[household["d_regular"] for household in households], marker_color="#1677ff")
+    fig.add_bar(name="Premium", x=labels, y=[household["d_premium"] for household in households], marker_color="#ff8a1f")
+    fig.update_layout(
+        barmode="group",
+        height=320,
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        margin=dict(l=48, r=16, t=36, b=40),
+        legend=dict(orientation="h", y=1.14),
+        yaxis_title="Capsules on weeks they bought it",
+        yaxis=dict(gridcolor="#e8edf3", zeroline=False),
+        xaxis=dict(zeroline=False),
+        font=dict(family="Inter, Arial, sans-serif", color="#172033"),
     )
-    st.markdown("**Linear programme**")
-    st.code(lp_detail["formulation"], language="text")
-    case_rows = []
-    for case in lp_detail["shared"]["cases"]:
-        case_rows.append(
-            {
-                "Assignment": case["assignment_label"],
-                "Feasible": "yes" if case["feasible"] else "no",
-                "Revenue €": case["revenue"] if case["feasible"] else None,
-                "R": case["R"] if case["feasible"] else None,
-                "P": case["P"] if case["feasible"] else None,
-                "Chosen": "yes" if case["assignment"] == shared["assignment"] else "",
-            }
+    return fig
+
+
+def result_card(solved: dict, households: list[dict], view: str) -> str:
+    product_rows = []
+    for household in households:
+        product = solved["assignment"][household["label"]]
+        quantity = {"Regular": household["d_regular"], "Premium": household["d_premium"], "None": 0.0}[product]
+        product_rows.append(
+            f'<div class="prob-row"><span>{household["label"]}</span><b>{product} · d = {quantity:.2f}</b></div>'
         )
-    st.markdown("**Product assignments evaluated as separate linear programmes**")
-    st.dataframe(pd.DataFrame(case_rows).sort_values("Revenue €", ascending=False), use_container_width=True, hide_index=True)
-    st.caption(
-        "Household 1 is a solid line, Household 2 is a dashed horizontal line at P = 77.5, Household 3 is long-dashed. "
-        "The shaded polygon is the feasible set of the winning assignment. "
-        "The dotted green line is the objective level through the optimum."
+    title = "Shared menu" if view == ALL_VIEW else solved["assignment"][view]
+    subtitle = "All households, one price pair" if view == ALL_VIEW else f"{view} solved on its own line"
+    tight = solved.get("tight") or []
+    if tight:
+        binding_rows = "".join(
+            f'<div class="prob-row"><span>Binding</span><b>{escape(name.split(" so that ", 1)[-1])}</b></div>'
+            for name in tight
+        )
+    else:
+        binding_rows = '<div class="prob-row"><span>Binding</span><b>none</b></div>'
+    return (
+        '<div class="insight">'
+        '<div class="eyebrow">Optimum</div>'
+        f"<h2>{escape(str(title))}</h2>"
+        f'<p class="sub">{escape(subtitle)}</p>'
+        f'<div class="prob-row"><span>Regular price R</span><b>{money(solved["R"])}</b></div>'
+        f'<div class="prob-row"><span>Premium price P</span><b>{money(solved["P"])}</b></div>'
+        f'<div class="prob-row"><span>Weekly revenue</span><b>{money(solved["revenue"])}</b></div>'
+        + "".join(product_rows)
+        + binding_rows
+        + "</div>"
     )
 
-with tab_household:
-    panels = st.columns(len(lp_detail["per_household"]))
-    for panel, item in zip(panels, lp_detail["per_household"]):
-        hh = item["household"]
-        best = item["programme"]["best"]
-        with panel:
-            st.plotly_chart(
-                household_figure(lp_detail, hh["label"]),
-                use_container_width=True,
-                config={"displayModeBar": False, "responsive": True},
-            )
-            for equation in household_equations(hh):
-                st.markdown(f'<div class="equation">{equation}</div>', unsafe_allow_html=True)
-            st.markdown(
-                f'<div class="info">{best["assignment_label"]}<br>R = {best["R"]:.2f}, P = {best["P"]:.2f}, revenue = €{best["revenue"]:.2f}</div>',
-                unsafe_allow_html=True,
-            )
-            if best.get("flat_price"):
-                st.caption(best["flat_price"])
+
+detail, structural, bound_table = household_price_lp(DATA_CSV)
+shared = detail["shared"]["best"]
+labels = [ALL_VIEW] + [item["household"]["label"] for item in detail["per_household"]]
 
 st.markdown(
-    f'<div class="info">{household} at the slider prices buys {selected_now["product"]} and earns €{selected_now["revenue"]:.2f}. '
-    f'Their own LP optimum earns €{selected_best["revenue"]:.2f}, so the slider leaves €{scenario_regret:.2f} on the table.</div>',
+    '<div class="eyebrow">Whiteboard linear programme</div>'
+    "<h1>Revenue-maximising prices</h1>"
+    '<p class="lede">Each household buys a fixed quantity of one product, so revenue is linear in the Regular price R and the Premium price P. '
+    "A line in that plane decides the product. The shared menu is the feasible assignment with the highest revenue.</p>",
     unsafe_allow_html=True,
 )
 
-st.markdown('<div id="sensitivity"></div>', unsafe_allow_html=True)
-st.subheader("Structural test & sensitivity analysis")
-st.markdown(
-    "Each OLS line coefficient is moved by ±10%, and Household 2's threshold P = 77.5 is moved by ±10%. The shared linear programme is solved again. "
-    "Separately, each household's own optimal price is moved ±10% and revenue is recomputed from the same lines. "
-    "The last chart widens the upper price box past the highest price observed in the experiment."
-)
-st.plotly_chart(
-    structural_sensitivity_figure(lp_structural),
-    use_container_width=True,
-    config={"displayModeBar": False, "responsive": True},
-)
-structural_show = lp_structural[lp_structural["kind"] == "line coefficient"][
-    ["Household", "parameter", "shock", "R_opt", "P_opt", "max_revenue", "delta_revenue", "assignment", "status"]
-].copy()
-structural_show.columns = [
-    "Household whose line moved",
-    "Term",
-    "Shock",
-    "Shared R €",
-    "Shared P €",
-    "Shared revenue €",
-    "Δ shared revenue €",
-    "Assignment",
-    "Status",
-]
-st.dataframe(structural_show.round(2), use_container_width=True, hide_index=True)
-st.plotly_chart(
-    price_move_figure(lp_structural),
-    use_container_width=True,
-    config={"displayModeBar": False, "responsive": True},
-)
-st.plotly_chart(
-    bound_sensitivity_figure(lp_bounds),
-    use_container_width=True,
-    config={"displayModeBar": False, "responsive": True},
-)
-st.dataframe(lp_bounds.round(2), use_container_width=True, hide_index=True)
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Shared Regular price", money(shared["R"]))
+k2.metric("Shared Premium price", money(shared["P"]))
+k3.metric("Total weekly revenue", money(shared["revenue"]))
+k4.metric("Assignment", short_assignment(shared["assignment"]))
 
-st.markdown('<div id="regret"></div>', unsafe_allow_html=True)
-st.subheader("Scenario comparison & regret matrix")
-st.markdown(
-    "Columns are the shared optimum, each household's own optimum, and the slider scenario. "
-    "Revenue is the fixed quantity times the price of the product that household's line says they buy. "
-    "Regret is that household's own LP revenue minus revenue at the menu. The cell on a household's own optimum is zero."
+st.markdown('<div class="card-title" style="margin-top:18px">Household</div>', unsafe_allow_html=True)
+view = st.segmented_control(
+    "Household",
+    options=labels,
+    default=ALL_VIEW,
+    key="lp_view",
+    label_visibility="collapsed",
+    width="stretch",
 )
-lp_regret = regret_table(lp_detail, scenario=(regular_price, premium_price))
-st.plotly_chart(regret_figure(lp_regret), use_container_width=True, config={"displayModeBar": False, "responsive": True})
+if view is None:
+    view = ALL_VIEW
+
+solved, shown, chart_title = active_programme(detail, view)
+figure = shared_figure(detail) if view == ALL_VIEW else household_figure(detail, view)
+chart_note = (
+    "Every household line, the shaded feasible region, and the shared optimum."
+    if view == ALL_VIEW
+    else "This household's line, the weeks they were observed, the feasible region, and their own optimum."
+)
+
+left, right = st.columns([1.65, 0.85], gap="medium")
+with left:
+    st.markdown(
+        f'<div class="card"><div class="card-title">{chart_title}</div><div class="card-sub">{chart_note}</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.plotly_chart(figure, width="stretch", config={"displayModeBar": False, "responsive": True})
+with right:
+    st.markdown(result_card(solved, shown, view), unsafe_allow_html=True)
+    if solved.get("flat_price"):
+        st.caption(solved["flat_price"])
+
+formula_cols = st.columns(1 + len(shown))
+with formula_cols[0]:
+    objective = escape(constraint_table(solved, shown).iloc[0]["Constraint"])
+    st.markdown(f'<div class="equation">Objective<br>{objective}</div>', unsafe_allow_html=True)
+for column, household in zip(formula_cols[1:], shown):
+    with column:
+        lines = "<br>".join(escape(line) for line in household_equations(household))
+        st.markdown(f'<div class="equation">{escape(household["label"])}<br>{lines}</div>', unsafe_allow_html=True)
+
+week6 = detail["frame"].loc[detail["frame"]["T"] == 6]
+if not week6.empty:
+    row = week6.iloc[0]
+    st.markdown(
+        f'<p class="note">Household 2&apos;s line is set to the separating threshold because OLS misclassified week 6 '
+        f'(R = {row["P_Regular"]:.0f}, P = {row["P_Premium"]:.0f}).</p>',
+        unsafe_allow_html=True,
+    )
+
+st.markdown('<div style="height:18px"></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="card"><div class="card-title">Constraints</div>'
+    '<div class="card-sub">Every side of each switching line, the price box, and the objective of the programme in view. '
+    "Binding is evaluated at that programme's optimum. A side marked “not in this programme” is the other side of the line.</div></div>",
+    unsafe_allow_html=True,
+)
+constraints = constraint_table(solved, detail["households"] if view == ALL_VIEW else shown)
+st.dataframe(constraints, width="stretch", hide_index=True)
+
+st.markdown('<div style="height:18px"></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="card"><div class="card-title">Average weekly demand</div>'
+    '<div class="card-sub">d is the average number of capsules on weeks when that household bought the product. Weeks with a zero stay in the sample and are not part of this average.</div></div>',
+    unsafe_allow_html=True,
+)
+demand_left, demand_right = st.columns([1, 1.15], gap="medium")
+with demand_left:
+    demand = demand_table(detail["households"])
+    styled = demand.copy()
+    styled["d Regular"] = styled["d Regular"].map(lambda value: f"{value:.4f}")
+    styled["d Premium"] = styled["d Premium"].map(lambda value: f"{value:.4f}")
+    st.dataframe(styled, width="stretch", hide_index=True)
+with demand_right:
+    st.plotly_chart(demand_figure(detail["households"]), width="stretch", config={"displayModeBar": False, "responsive": True})
+
+line_shocks = structural[structural["kind"] == "line coefficient"]
+price_moves = structural[structural["kind"] == "price move"]
+if view != ALL_VIEW:
+    line_shocks = line_shocks[line_shocks["Household"] == view]
+    price_moves = price_moves[price_moves["Household"] == view]
+if view == ALL_VIEW:
+    shock_note = "Each OLS coefficient, and Household 2's threshold, is moved by 10 percent and the shared programme is solved again."
+else:
+    shock_note = f"{view}'s line is moved by 10 percent and the shared programme is solved again. Only that household is shown."
+
+st.markdown('<div style="height:18px"></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="card"><div class="card-title">Sensitivity, ±10%</div>'
+    f'<div class="card-sub">{escape(shock_note)} '
+    "The next chart moves the household's own optimal price by 10 percent and recomputes revenue from the same lines.</div></div>",
+    unsafe_allow_html=True,
+)
+if not line_shocks.empty:
+    st.plotly_chart(structural_sensitivity_figure(line_shocks), width="stretch", config={"displayModeBar": False, "responsive": True})
+    show = line_shocks[["Household", "parameter", "shock", "R_opt", "P_opt", "max_revenue", "delta_revenue", "assignment", "status"]].copy()
+    show.columns = ["Household", "Term", "Shock", "R", "P", "Revenue", "Δ revenue", "Assignment", "Status"]
+    st.dataframe(show.round(2), width="stretch", hide_index=True)
+if not price_moves.empty:
+    st.plotly_chart(price_move_figure(price_moves), width="stretch", config={"displayModeBar": False, "responsive": True})
+if view == ALL_VIEW:
+    st.plotly_chart(bound_sensitivity_figure(bound_table), width="stretch", config={"displayModeBar": False, "responsive": True})
+    st.dataframe(bound_table.round(2), width="stretch", hide_index=True)
+
+st.markdown('<div style="height:18px"></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="card"><div class="card-title">Scenario comparison and regret</div>'
+    '<div class="card-sub">The scenario is a Regular / Premium price pair. Regret is a household&apos;s own LP revenue minus revenue at that menu. '
+    "The cell on a household's own optimum is zero.</div></div>",
+    unsafe_allow_html=True,
+)
+mean_r = round(float(detail["frame"]["P_Regular"].mean()), 2)
+mean_p = round(float(detail["frame"]["P_Premium"].mean()), 2)
+s1, s2 = st.columns(2)
+scenario_r = s1.number_input(
+    "Scenario Regular price",
+    min_value=float(detail["bounds"]["R_lower"]),
+    max_value=float(detail["bounds"]["R_upper"]),
+    value=mean_r,
+    step=0.01,
+    key="scenario_r",
+)
+scenario_p = s2.number_input(
+    "Scenario Premium price",
+    min_value=float(detail["bounds"]["P_lower"]),
+    max_value=float(detail["bounds"]["P_upper"]),
+    value=mean_p,
+    step=0.01,
+    key="scenario_p",
+)
+regret = regret_table(detail, scenario=(scenario_r, scenario_p))
+if view != ALL_VIEW:
+    regret_view = regret[regret["Household"] == view]
+else:
+    regret_view = regret
+st.plotly_chart(regret_figure(regret_view), width="stretch", config={"displayModeBar": False, "responsive": True})
+rev_pivot = regret_view.pivot(index="Household", columns="Menu", values="revenue")
+reg_pivot = regret_view.pivot(index="Household", columns="Menu", values="regret")
 st.markdown("**Revenue by scenario (€)**")
-st.dataframe(lp_regret.pivot(index="Household", columns="Menu", values="revenue").round(2), use_container_width=True)
+st.dataframe(rev_pivot.round(2), width="stretch")
 st.markdown("**Regret versus that household's LP optimum (€)**")
-st.dataframe(lp_regret.pivot(index="Household", columns="Menu", values="regret").round(2), use_container_width=True)
-
-with st.expander("How the linear programme is set up"):
-    st.markdown(FORMULATION_SUMMARY)
-    st.code(lp_detail["formulation"], language="text")
-
-st.markdown('<div id="methodology"></div>',unsafe_allow_html=True);st.subheader("Model & methodology")
-with st.expander("Step-by-step explanation"):
-    st.markdown(f"""### 1. Start with the original data
-- 11 weeks × 3 households = **33 household-week observations**.
-- Each observation contains Regular price, Premium price, Regular quantity, and Premium quantity.
-
-### 2. Convert quantities into observed choices
-- Regular quantity > 0 → **Regular**
-- Otherwise Premium quantity > 0 → **Premium**
-- Otherwise → **No Purchase**
-
-### 3. Split the decision into two stages
-**Stage 1 — Do I buy?** Buy = 1 for Regular/Premium and 0 for No Purchase.
-
-**Stage 2 — What do I buy, given that I buy?** Premium = 1 for Premium and 0 for Regular.
-
-So the logic is: **Do I buy? → What do I buy?**
-
-### 4. Standardize prices
-`Z_R = (P_R − mean(P_R)) / SD(P_R)`  
-`Z_P = (P_P − mean(P_P)) / SD(P_P)`
-
-Across the 33 observations: Regular mean ≈ **€46.09**, SD ≈ **€8.48**; Premium mean ≈ **€81.73**, SD ≈ **€9.81**.
-
-Example: €40 Regular → Z_R ≈ −0.718; €70 Premium → Z_P ≈ −1.196.
-
-### 5. Add household indicators
-Household 1 is the reference household. Household 2 and Household 3 enter as dummy variables, alongside the two standardized prices.
-
-### 6. Estimate Stage 1 — P(Buy)
-The logistic model is:
-
-`logit(P(Buy)) = β₀ + β_R Z_R + β_P Z_P + β_HH2 HH2 + β_HH3 HH3`
-
-Approximate fitted coefficients: β₀ = **3.003**, β_R = **0.177**, β_P = **−1.197**, β_HH2 = **0.555**, β_HH3 = **−1.448**.
-
-For Household 1, Week 1: `Z ≈ 4.31`, so `P(Buy) ≈ 98.7%`.
-
-### 7. Estimate Stage 2 — P(Premium | Buy)
-The four No Purchase observations are excluded, leaving **29 buyer observations**: HH1 = 11, HH2 = 11, HH3 = 7.
-
-The second logistic model is:
-
-`logit(P(Premium | Buy)) = γ₀ + γ_R Z_R + γ_P Z_P + γ_HH2 HH2 + γ_HH3 HH3`
-
-Approximate fitted coefficients: γ₀ = **−1.096**, γ_R = **0.520**, γ_P = **−1.514**, γ_HH2 = **0.125**, γ_HH3 = **1.542**.
-
-For Household 1, Week 4: Z_R ≈ 2.23 and Z_P ≈ −0.69, giving `P(Premium | Buy) ≈ 75%`.
-
-### 8. Combine the two stages
-`P(No Purchase) = 1 − P(Buy)`  
-`P(Premium) = P(Buy) × P(Premium | Buy)`  
-`P(Regular) = P(Buy) × [1 − P(Premium | Buy)]`
-
-Example: if P(Buy) = 80% and P(Premium | Buy) = 60%, then No Purchase = 20%, Premium = 48%, Regular = 32%.
-
-### 9. Derive the 50% prediction boundaries
-For logistic regression, a 50% probability occurs when the linear predictor equals zero.
-
-For Household 1, the Purchase boundary becomes approximately:
-
-`P_P = 0.17 × P_R + 98.4`
-
-The Regular/Premium conditional boundary becomes approximately:
-
-`P_P = 0.40 × P_R + 56.3`
-
-These coefficients are algebraic transformations of the estimated regression coefficients and the price mean/SD; they are not separately estimated parameters.
-
-### 10. Create the decision map
-For many Regular/Premium price combinations, the model calculates P(Regular), P(Premium), and P(No Purchase). The highest-probability choice defines the predicted region shown on the map.
-
-**Key flow:** Raw data → observed choices → standardize prices → two logistic regressions → estimated coefficients → probabilities → combine stages → 50% boundaries → decision map.
-
-**Important:** This is an exploratory classification model, not a structural/causal demand model. The dashed boundaries are 50% prediction contours, not validated willingness-to-pay curves.""")
-with st.expander("How should I read the boundaries?"):
-    ps,pi=purchase_boundary;cs,ci=choice_boundary
-    st.markdown(f"""The dashed lines are **50% prediction contours**. They are not literal willingness-to-pay curves.
-
-**Purchase boundary**  
-`P_P = {ps:.2f} × P_R + {pi:.1f}`
-
-**Regular / Premium boundary**  
-`P_P = {cs:.2f} × P_R + {ci:.1f}`
-
-The background region shows which choice the model predicts as most likely at each price combination.""")
-with st.expander("Important interpretation note"): st.markdown("This is an exploratory classification model rather than a structural demand or causal price-elasticity model. The boundary lines are useful for visualizing model predictions, but should not be presented as validated willingness-to-pay thresholds.")
-
-st.markdown('<div id="data"></div>',unsafe_allow_html=True);st.subheader("Observed weeks");sample=OBS[OBS.Household==household][["T","P_Regular","P_Premium","Choice","Quantity"]].copy();sample.columns=["Week","Regular price","Premium price","Observed choice","Quantity"];st.dataframe(sample,use_container_width=True,hide_index=True);st.caption("33 household-week observations · 3 households · exploratory research model")
+st.dataframe(reg_pivot.round(2), width="stretch")
