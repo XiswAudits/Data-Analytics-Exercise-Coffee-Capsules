@@ -97,7 +97,8 @@ div[data-testid="stSegmentedControl"] {margin: 0 0 8px;}
 div[data-testid="stSegmentedControl"] button {font-size: 14px !important;}
 [data-testid="stPlotlyChart"] {background: #fff; border: 1px solid #e5eaf0; border-radius: 16px; padding: 4px 4px 0; overflow: hidden;}
 .katex-display {overflow-x: auto; overflow-y: hidden; margin: 0.4em 0 !important;}
-.table-title {font-size: 14px; font-weight: 600; color: #101828; margin: 12px 0 8px;}
+.table-title {display: inline-block; font-size: 14px; font-weight: 600; color: #101828; margin: 12px 0 8px;}
+[data-testid="stTooltipIcon"] svg {width: 14px; height: 14px; stroke: #98a2b3;}
 .table-caption {font-size: 13px; line-height: 1.45; color: #667085; margin: 2px 0 8px;}
 .compare-grid {display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 12px;}
 .compare-k {font-size: 12px; line-height: 1.35; color: #667085; font-weight: 500;}
@@ -351,6 +352,38 @@ def section_head(title: str, subtitle: str) -> None:
     )
 
 
+PRICE_MOVE_TIP = (
+    "Each bar starts from that household's best prices, moves one price by 10%, and shows the change in revenue you (the seller) earn from it. "
+    "Cutting a price earns less from buyers of that product. Raising it too far makes the household switch or stop buying, which costs the most. "
+    "No bar = that price doesn't affect it."
+)
+REVENUE_SCENARIO_TIP = (
+    "Each column is one set of prices: the best prices for one household alone (HH LP), the benchmark Scenario prices, or the one Shared LP price pair for everyone. "
+    "Each cell is the revenue that household brings in at those prices. Computed from the data; only the Scenario column changes if you change the scenario prices."
+)
+REGRET_TIP = (
+    "Regret = how much you miss compared with that household's best case: its best revenue minus the revenue at these prices. "
+    "0 means these prices are already best for it; bigger = worse. Shared LP has the smallest regret overall."
+)
+
+
+def info_title(title: str, tip: str) -> None:
+    """Title row with Streamlit's small hover tooltip, in the same type as the tables."""
+    st.markdown(
+        f'<div class="table-title">{escape(title)}</div>',
+        unsafe_allow_html=True,
+        help=tip,
+        width="content",
+    )
+
+
+def chart_with_tip(fig: go.Figure, title: str, tip: str) -> None:
+    """Show a chart whose title sits beside the tooltip, not inside the plot."""
+    fig.update_layout(title=None, margin_t=16)
+    info_title(title, tip)
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "responsive": True})
+
+
 def _formula_article(kicker: str, blocks: list[tuple[str, str]], meta: list[str]) -> str:
     body = "".join(f'<div class="{kind}">{escape(text)}</div>' for kind, text in blocks)
     meta_html = "<br>".join(escape(line) for line in meta)
@@ -592,7 +625,11 @@ if not line_shocks.empty:
     show.columns = ["Household", "Term", "Shock", "R", "P", "Revenue", "Δ revenue", "What happens"]
     render_table(show, widths=["8%", "12%", "8%", "8%", "8%", "10%", "11%", "35%"])
 if not price_moves.empty:
-    st.plotly_chart(price_move_figure(price_moves), width="stretch", config={"displayModeBar": False, "responsive": True})
+    chart_with_tip(
+        price_move_figure(price_moves),
+        "Revenue when that household's price moves ±10%",
+        PRICE_MOVE_TIP,
+    )
 
 section_head(
     "Scenario comparison and regret",
@@ -623,7 +660,11 @@ if view != ALL_VIEW:
     regret_view = regret[regret["Household"] == view]
 else:
     regret_view = regret
-st.plotly_chart(regret_figure(regret_view), width="stretch", config={"displayModeBar": False, "responsive": True})
+chart_with_tip(
+    regret_figure(regret_view),
+    "Regret versus each household's own optimum",
+    REGRET_TIP,
+)
 _MENU = {
     "Shared LP optimum": "Shared LP",
     "Household 1 LP optimum": "HH1 LP",
@@ -633,9 +674,9 @@ _MENU = {
 }
 rev_pivot = regret_view.pivot(index="Household", columns="Menu", values="revenue").rename(columns=_MENU)
 reg_pivot = regret_view.pivot(index="Household", columns="Menu", values="regret").rename(columns=_MENU)
-st.markdown('<div class="table-title">Revenue by scenario (€)</div>', unsafe_allow_html=True)
+info_title("Revenue by scenario (€)", REVENUE_SCENARIO_TIP)
 render_table(rev_pivot.reset_index().map(_fmt2))
-st.markdown('<div class="table-title">Regret versus that household\'s LP optimum (€)</div>', unsafe_allow_html=True)
+info_title("Regret versus that household's LP optimum (€)", REGRET_TIP)
 render_table(reg_pivot.reset_index().map(_fmt2))
 
 
