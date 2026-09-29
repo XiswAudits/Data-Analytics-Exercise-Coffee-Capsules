@@ -140,6 +140,106 @@ def contour_terms(line: dict) -> tuple[float, float] | None:
     return float(slope), float(icept)
 
 
+def contour_line(slope: float, intercept: float, kind: str) -> dict:
+    """Line P = slope·R + intercept, with Premium (or still buying) on or below it.
+
+    The 0.5 contour of score = (0.5 + intercept) + slope·R − P is that line.
+    score >= 0.5 is the side the linear programme treats as Premium or as still buying.
+    """
+    line = {
+        "intercept": 0.5 + float(intercept),
+        "b_R": float(slope),
+        "b_P": -1.0,
+        "r_squared": float("nan"),
+        "kind": kind,
+    }
+    line["equation"] = line_equation(line)
+    return line
+
+
+def classify_accuracy(frame: pd.DataFrame, household: dict, line: dict) -> tuple[int, int]:
+    """Weeks whose observed product matches the product implied by `line`."""
+    prefix = household["prefix"]
+    probe = {"lines": [line], "only_product": household.get("only_product")}
+    correct = 0
+    for _, row in frame.iterrows():
+        regular_qty = float(row[f"{prefix}_Regular"])
+        premium_qty = float(row[f"{prefix}_Premium"])
+        observed = "Regular" if regular_qty > 0 else "Premium" if premium_qty > 0 else "None"
+        predicted = predict_product(probe, float(row["P_Regular"]), float(row["P_Premium"]))
+        correct += int(predicted == observed)
+    return correct, int(len(frame))
+
+
+def ols_regression(frame: pd.DataFrame, household: dict) -> dict:
+    """Least-squares line for one household, and the rows that produced it.
+
+    A household that buys both products is a Premium/Regular regression on the
+    weeks they bought something. A household that never buys Regular (Household 3)
+    is a bought/not-bought regression on every week. Both are y = a + b R + c P.
+    """
+    prefix = household["prefix"]
+    regular_qty = frame[f"{prefix}_Regular"].to_numpy(dtype=float)
+    premium_qty = frame[f"{prefix}_Premium"].to_numpy(dtype=float)
+    bought_regular = regular_qty > 0
+    bought_premium = premium_qty > 0
+    bought = bought_regular | bought_premium
+    if bought_regular.any() and bought_premium.any():
+        mask = bought
+        target = bought_premium[mask].astype(float)
+        kind = "switch"
+        positive_label = "Premium"
+    else:
+        mask = np.ones(len(frame), dtype=bool)
+        target = bought.astype(float)
+        kind = "stop"
+        positive_label = "bought"
+    weeks = frame.loc[mask, "T"].to_numpy()
+    regular = frame.loc[mask, "P_Regular"].to_numpy(dtype=float)
+    premium = frame.loc[mask, "P_Premium"].to_numpy(dtype=float)
+    observed = np.where(
+        bought_regular[mask],
+        "Regular",
+        np.where(bought_premium[mask], "Premium", "None"),
+    )
+    line = _fit_lpm(np.column_stack([regular, premium]), target)
+    line["kind"] = kind
+    line["equation"] = line_equation(line)
+    slope, icept = contour_terms(line)
+    design = np.column_stack([np.ones(len(target)), regular, premium])
+    beta = np.array([line["intercept"], line["b_R"], line["b_P"]], dtype=float)
+    fitted = design @ beta
+    correct, n = classify_accuracy(frame, household, line)
+    rows = []
+    for index, week in enumerate(weeks):
+        rows.append({
+            "week": int(week),
+            "R": float(regular[index]),
+            "P": float(premium[index]),
+            "y": int(target[index]),
+            "observed": str(observed[index]),
+            "fitted": float(fitted[index]),
+        })
+    return {
+        "kind": kind,
+        "positive_label": positive_label,
+        "rows": rows,
+        "a": float(line["intercept"]),
+        "b": float(line["b_R"]),
+        "c": float(line["b_P"]),
+        "m": float(slope),
+        "k": float(icept),
+        "line": line,
+        "X": design.tolist(),
+        "y": target.astype(float).tolist(),
+        "XtX": (design.T @ design).tolist(),
+        "Xty": (design.T @ target).astype(float).tolist(),
+        "beta": beta.tolist(),
+        "correct": correct,
+        "n": n,
+    }
+
+
 def ols_switch_line(frame: pd.DataFrame, household: dict) -> dict | None:
     """OLS linear probability model on weeks the household bought something.
 
