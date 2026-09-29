@@ -1,6 +1,7 @@
-numpy>=1.26
+streamlit>=1.36
 pandas>=2.0
+numpy>=1.24
+plotly>=5.20
+scikit-learn>=1.4
+# scipy.optimize.linprog (HiGHS) solves the whiteboard price LP
 scipy>=1.11
-statsmodels>=0.14
-streamlit>=1.32
-matplotlib>=3.8
