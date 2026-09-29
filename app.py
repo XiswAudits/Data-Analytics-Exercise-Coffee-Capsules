@@ -22,8 +22,6 @@ importlib.reload(price_optimisation)
 from price_optimisation import (
     apply_chart_layout,
     best_programme,
-    bound_sensitivity,
-    bound_sensitivity_figure,
     classify_accuracy,
     constraint_table,
     contour_line,
@@ -125,8 +123,7 @@ def household_price_lp(csv_name: str):
     """Shared and per-household programmes. Cached so the view switch does not refit."""
     detail = optimise_prices_detailed(csv_name)
     structural = structural_sensitivity(detail, pct=SHOCK_PCT)
-    bounds = bound_sensitivity(detail)
-    return detail, structural, bounds
+    return detail, structural
 
 
 def money(value: float) -> str:
@@ -313,7 +310,7 @@ def result_card(solved: dict, households: list[dict], view: str) -> str:
     )
 
 
-detail, structural, bound_table = household_price_lp(DATA_CSV)
+detail, structural = household_price_lp(DATA_CSV)
 shared = detail["shared"]["best"]
 labels = [ALL_VIEW] + [item["household"]["label"] for item in detail["per_household"]]
 
@@ -442,22 +439,6 @@ if not line_shocks.empty:
     render_table(show)
 if not price_moves.empty:
     st.plotly_chart(price_move_figure(price_moves), width="stretch", config={"displayModeBar": False, "responsive": True})
-if view == ALL_VIEW:
-    st.plotly_chart(bound_sensitivity_figure(bound_table), width="stretch", config={"displayModeBar": False, "responsive": True})
-    bounds_view = bound_table.copy()
-    bounds_view["assignment"] = bounds_view["assignment"].map(_short_menu)
-    for column in ("R_upper", "P_upper", "R_opt", "P_opt", "max_revenue"):
-        bounds_view[column] = bounds_view[column].map(_fmt2)
-    bounds_view = bounds_view.rename(columns={
-        "Price box": "Price box",
-        "R_upper": "R upper",
-        "P_upper": "P upper",
-        "R_opt": "R",
-        "P_opt": "P",
-        "max_revenue": "Revenue",
-        "assignment": "Assignment",
-    })
-    render_table(bounds_view)
 
 section_head(
     "Scenario comparison and regret",
@@ -559,7 +540,7 @@ def _ols_misses(frame: pd.DataFrame, household: dict) -> list[dict]:
     return misses
 
 
-def render_methodology(detail: dict, bound_rows: pd.DataFrame) -> None:
+def render_methodology(detail: dict) -> None:
     """End-to-end account of the linear programme. Every figure comes from `detail`."""
     frame = detail["frame"]
     households = detail["households"]
@@ -685,11 +666,6 @@ def render_methodology(detail: dict, bound_rows: pd.DataFrame) -> None:
         f"- **Price moves.** Each household's own optimal price is moved by {SHOCK_PCT:.0%}, and revenue is read off the same lines. "
         "That is the cost of missing their own optimum by a little."
     )
-    box_names = ", ".join(str(name) for name in bound_rows["Price box"])
-    st.markdown(
-        f"- **Price box.** The shared programme is solved again as the upper bounds relax ({box_names}). "
-        "If revenue keeps climbing, the optimum was leaning on the edge of the sample."
-    )
     st.markdown(
         "- **Scenario.** A Regular / Premium pair — by default the average prices in the table — is scored with the same lines. "
         "Menus in the comparison are the shared optimum, each household's own optimum, and that scenario."
@@ -698,15 +674,15 @@ def render_methodology(detail: dict, bound_rows: pd.DataFrame) -> None:
     st.markdown("Regret is zero on a household's own optimum, and positive when another menu earns them less.")
 
     st.markdown("#### Limitations")
-    at_ceiling = abs(shared["R"] - bounds["R_upper"]) <= 1e-6
-    if at_ceiling:
+    cap = float(bounds["R_upper"])
+    cap_label = f"€{cap:.0f}" if abs(cap - round(cap)) < 1e-6 else money(cap)
+    if abs(shared["R"] - cap) <= 1e-6:
         st.markdown(
-            f"- **R is at the top of the sample.** The optimum sets R to {money(bounds['R_upper'])}, "
-            f"the highest Regular price observed. The programme is not allowed to go higher, so this is a corner of the box, not evidence that a still higher Regular price would fail."
+            f"- R sits at the {cap_label} cap because that's the highest observed Regular price, and the optimum would follow a higher cap."
         )
     else:
         st.markdown(
-            f"- The optimum Regular price is {money(shared['R'])}, inside the box whose top is the highest observed Regular price, {money(bounds['R_upper'])}."
+            f"- The optimum Regular price is {money(shared['R'])}, inside a box whose top is the highest observed Regular price, {money(cap)}."
         )
     st.markdown(
         f"- **The sample is small:** {n_weeks} weeks and {n_households} households. The lines and the optimum are a reading of this table, not a forecast."
@@ -932,5 +908,5 @@ def _contour_latex(slope: float, icept: float) -> str:
     return rf"P = {slope:.4f}\, R {sign} {abs(icept):.2f}"
 
 
-render_methodology(detail, bound_table)
+render_methodology(detail)
 render_line_origins(detail)
