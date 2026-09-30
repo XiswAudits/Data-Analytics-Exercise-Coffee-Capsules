@@ -183,12 +183,17 @@ def demand_figure(households: list[dict]) -> go.Figure:
     return fig
 
 
-def render_table(frame: pd.DataFrame) -> None:
+def render_table(frame: pd.DataFrame, cell_styles: dict[tuple[int, str], str] | None = None) -> None:
     """Full-width table. Cells wrap, so the page does not grow a horizontal scrollbar."""
     headers = "".join(f"<th>{escape(str(column))}</th>" for column in frame.columns)
     rows = []
-    for record in frame.itertuples(index=False):
-        cells = "".join(f"<td>{escape('' if value is None else str(value))}</td>" for value in record)
+    styles = cell_styles or {}
+    for row_index, record in enumerate(frame.itertuples(index=False)):
+        cells = "".join(
+            (f'<td style="{styles[(row_index, column)]}">' if (row_index, column) in styles else "<td>")
+            + f"{escape('' if value is None else str(value))}</td>"
+            for column, value in zip(frame.columns, record)
+        )
         rows.append(f"<tr>{cells}</tr>")
     st.markdown(
         '<div class="table-wrap"><table class="grid"><thead><tr>'
@@ -198,6 +203,32 @@ def render_table(frame: pd.DataFrame) -> None:
         + "</tbody></table></div>",
         unsafe_allow_html=True,
     )
+
+
+BEST_CELL_STYLE = "background-color:#e6f4ea;color:#1e5b32;font-weight:600"
+WORST_CELL_STYLE = "background-color:#fbe9e7;color:#8c2f25;font-weight:600"
+
+
+def total_row_styles(table: pd.DataFrame, higher_is_better: bool) -> dict[tuple[int, str], str]:
+    """Soft green on the best Total cell(s), soft red on the worst. Total row (last row) only.
+
+    Compared at displayed (cent) precision, so ties on screen get the same colour.
+    """
+    columns = [column for column in table.columns if column != "Household"]
+    row = len(table) - 1
+    totals = {column: round(float(table.iloc[row][column]), 2) for column in columns}
+    totals = {column: value for column, value in totals.items() if value == value}
+    if not totals:
+        return {}
+    high, low = max(totals.values()), min(totals.values())
+    best, worst = (high, low) if higher_is_better else (low, high)
+    styles = {}
+    for column, value in totals.items():
+        if value == best:
+            styles[(row, column)] = BEST_CELL_STYLE
+        elif value == worst:
+            styles[(row, column)] = WORST_CELL_STYLE
+    return styles
 
 
 def _pretty_number_text(text: str) -> str:
@@ -598,13 +629,15 @@ rev_table = rev_pivot.reset_index()
 # Total row: column sums of the household revenues (the company's total revenue per period at each set of prices).
 rev_total = pd.DataFrame([{"Household": "Total", **rev_pivot.sum(axis=0, numeric_only=True).to_dict()}])
 rev_table = pd.concat([rev_table, rev_total[rev_table.columns]], ignore_index=True)
-render_table(rev_table.map(_fmt2))
+render_table(rev_table.map(_fmt2), cell_styles=total_row_styles(rev_table, higher_is_better=True))
+st.caption("Green = best total, red = worst.")
 info_title("Regret versus that household's own optimal prices, BS1–BS3 (€)", REGRET_TIP)
 reg_table = reg_pivot.reset_index()
 # Total row: all revenue given up across households at each set of prices, summed from the displayed (cent-rounded) cells so the column adds up on screen. Display only; the caption uses reg_pivot without it.
 reg_total = pd.DataFrame([{"Household": "Total (money left out)", **reg_pivot.round(2).sum(axis=0, numeric_only=True).round(2).to_dict()}])
 reg_table = pd.concat([reg_table, reg_total[reg_table.columns]], ignore_index=True)
-render_table(reg_table.map(_fmt2))
+render_table(reg_table.map(_fmt2), cell_styles=total_row_styles(reg_table, higher_is_better=False))
+st.caption("Green = best total, red = worst.")
 st.caption(regret_company_caption(rev_pivot, reg_pivot))
 
 
