@@ -1,6 +1,6 @@
 # Coffee Capsule Pricing Model
 
-Interactive Streamlit app for the 11-week, three-household coffee-capsule exercise. The published model is the whiteboard linear programme from [Coffee-Capsules-Experiment](https://github.com/XiswAudits/Coffee-Capsules-Experiment) (`e1abc10`).
+Interactive Streamlit app for the 11-period, three-household coffee-capsule exercise. The published model is the whiteboard linear programme from [Coffee-Capsules-Experiment](https://github.com/XiswAudits/Coffee-Capsules-Experiment) (`e1abc10`).
 
 ## Run locally
 
@@ -27,19 +27,19 @@ The earlier successive linear programme of quadratic OLS demand has been retired
 
 ### Fixed quantities
 
-`d_i` is the average number of capsules bought on weeks when that household chose the product. Estimated from `coffee_capsules_data.csv`, not hard-coded:
+`d_i` is the average number of capsules bought in the periods when that household chose the product. Estimated from `coffee_capsules_data.csv`, not hard-coded:
 
 | Household | d when buying Regular | d when buying Premium |
 |---|---:|---:|
-| Household 1 | 4.3333 (9 weeks) | 4.0000 (2 weeks) |
-| Household 2 | 4.0000 (7 weeks) | 3.0000 (4 weeks) |
-| Household 3 | never buys Regular | 4.2857 (7 weeks) |
+| Household 1 | 4.3333 (9 periods) | 4.0000 (2 periods) |
+| Household 2 | 4.0000 (7 periods) | 3.0000 (4 periods) |
+| Household 3 | never buys Regular | 4.2857 (7 periods) |
 
 ### Lines in the R–P plane
 
 A linear probability model (OLS of a 0/1 indicator on an intercept, `R`, and `P`) supplies the 0.5 contour for Household 1 and Household 3. Premium is the side of a switching line where the fitted score is at least 0.5. A household that sometimes buys nothing also has a stop-buying line.
 
-Household 2's OLS line (`P = 0.2305 R + 67.6909`) classified 10 of 11 weeks and put week 6 (R = 55, P = 80) on the Premium side. It is replaced by the horizontal threshold `P = 77.5`, which separates all 11 weeks: Premium weeks 1, 4, 5 and 10 have P from 70 to 75, and Regular weeks have P at least 80. Household 2 buys Premium when `P <= 77.5` and Regular when `P >= 77.5`.
+Household 2's OLS line (`P = 0.2305 R + 67.6909`) classified 10 of 11 periods and put period T6 (R = 55, P = 80) on the Premium side. It is replaced by the horizontal threshold `P = 77.5`, which separates all 11 periods: Premium periods T1, T4, T5 and T10 have P from 70 to 75, and Regular periods have P at least 80. Household 2 buys Premium when `P <= 77.5` and Regular when `P >= 77.5`.
 
 | Household | Line | Reading |
 |---|---|---|
@@ -85,12 +85,14 @@ With `USE_RESERVATION_CAPS = True` (in `price_optimisation.py`) the programme en
 
 `python price_optimisation.py` checks that each reported optimum is a vertex, satisfies `A_ub x <= b_ub`, and that revenue equals `c · x`.
 
-The page opens on **Revenue-maximising prices**. A **Model & methodology** section at the bottom explains the data, the fixed quantities, the lines, the linear programme, the result, the checks, and the limitations. KPI cards show the shared optimum. A household control switches between all households and one household: all households draw every line and the shared feasible region; one household draws its line, the observed weeks, and its own optimum. The constraints table lists the objective, both sides of each line, the price bounds, whether each row binds, and in-sample accuracy. Average weekly demand is the fixed quantity `d_i`. Sensitivity re-solves the shared LP after a ±10% shock to each OLS line coefficient and to Household 2's threshold, and moves each household's own prices by ±10%. The regret matrix includes the shared optimum, each household optimum, and the scenario prices.
+The page opens on **Revenue-maximising prices**. A **Model & methodology** section at the bottom explains the data, the fixed quantities, the lines, the linear programme, the result, the checks, and the limitations. KPI cards show the shared optimum. A household control switches between all households and one household: all households draw every line and the shared feasible region; one household draws its line, the observed periods, and its own optimum. The constraints table lists the objective, both sides of each line, the price bounds, whether each row binds, and in-sample accuracy. Average demand per period is the fixed quantity `d_i`. Sensitivity re-solves the shared LP after a ±10% shock to each OLS line coefficient and to Household 2's threshold, and moves each household's own prices by ±10%. The regret matrix includes the shared optimum, each household optimum, and the scenario prices.
 
 ## Dataset
 
-`coffee_capsules_data.csv` is the file the app and `price_optimisation.py` read. It is the experiment schema (`T`, `P_Regular`, `P_Premium`, `HH1_Regular`, …). `data/coffee_capsules.csv` is this repository's earlier transcription of the same 11 weeks (same quantities and prices, different column names) and is kept because the observations match. Zero quantities are retained because they represent observed No Purchase behaviour.
+**Note:** One period = one row of data (T = 1–11); the data doesn't state the period length, so all revenue is per period.
+
+`coffee_capsules_data.csv` is the file the app and `price_optimisation.py` read. It is the experiment schema (`T`, `P_Regular`, `P_Premium`, `HH1_Regular`, …). `data/coffee_capsules.csv` is this repository's earlier transcription of the same 11 periods (same quantities and prices, different column names) and is kept because the observations match. Zero quantities are retained because they represent observed No Purchase behaviour.
 
 ## Limitations
 
-Only 11 weekly observations are available. The fitted lines and the linear programme are exploratory. They are not causal elasticities, willingness-to-pay estimates, or out-of-sample forecasts. No unit costs were supplied, so the objective is revenue, not profit.
+Only 11 observations (periods T1–T11) are available. The fitted lines and the linear programme are exploratory. They are not causal elasticities, willingness-to-pay estimates, or out-of-sample forecasts. No unit costs were supplied, so the objective is revenue, not profit.
