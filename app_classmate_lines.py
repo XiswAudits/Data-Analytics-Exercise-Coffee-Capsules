@@ -716,6 +716,11 @@ scenario_p = s2.number_input(
     step=0.01,
     key="scenario_p",
 )
+st.caption(
+    f"Scenario = your own test prices. By default these are the average prices charged over the {int(detail['frame']['T'].nunique())} weeks "
+    f"(Regular €{mean_r:.2f}, Premium €{mean_p:.2f}), so the Scenario column shows what the company earns "
+    "if it kept charging those averages. Type other prices to test any pair."
+)
 regret = regret_table(detail, scenario=(scenario_r, scenario_p))
 if view != ALL_VIEW:
     regret_view = regret[regret["Household"] == view]
