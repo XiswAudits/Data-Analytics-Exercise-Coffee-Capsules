@@ -239,7 +239,8 @@ PRICE_MOVE_TIP = (
 )
 REVENUE_SCENARIO_TIP = (
     "Each column is one set of prices: BS1, BS2, BS3 are the best prices for one household alone (BS1 = HH1's own optimal prices, BS2 = HH2's, BS3 = HH3's), Scenario is the benchmark Scenario prices, and Original DS is the one shared LP price pair for everyone. "
-    "Each cell is the revenue that household brings in at those prices. Computed from the data; only the Scenario column changes if you change the scenario prices."
+    "Each cell is the revenue that household brings in at those prices. Computed from the data; only the Scenario column changes if you change the scenario prices. "
+    "The Total row sums each column: the company's total weekly revenue at those prices."
 )
 REGRET_TIP = (
     "Regret = how much you miss compared with that household's best case: its best revenue minus the revenue at these prices. "
@@ -524,7 +525,11 @@ _MENU = {
 rev_pivot = regret_view.pivot(index="Household", columns="Menu", values="revenue").rename(columns=_MENU)
 reg_pivot = regret_view.pivot(index="Household", columns="Menu", values="regret").rename(columns=_MENU)
 info_title("Revenue by scenario (€)", REVENUE_SCENARIO_TIP)
-render_table(rev_pivot.reset_index().map(_fmt2))
+rev_table = rev_pivot.reset_index()
+# Total row: column sums of the household revenues (the company's total weekly revenue at each set of prices).
+rev_total = pd.DataFrame([{"Household": "Total", **rev_pivot.sum(axis=0, numeric_only=True).to_dict()}])
+rev_table = pd.concat([rev_table, rev_total[rev_table.columns]], ignore_index=True)
+render_table(rev_table.map(_fmt2))
 info_title("Regret versus that household's own optimal prices, BS1–BS3 (€)", REGRET_TIP)
 render_table(reg_pivot.reset_index().map(_fmt2))
 
