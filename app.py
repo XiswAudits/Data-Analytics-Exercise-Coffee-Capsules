@@ -156,9 +156,9 @@ def demand_table(households: list[dict]) -> pd.DataFrame:
         rows.append({
             "Household": household["label"],
             "d Regular": household["d_regular"],
-            "Regular weeks": household["n_regular"],
+            "Regular periods": household["n_regular"],
             "d Premium": household["d_premium"],
-            "Premium weeks": household["n_premium"],
+            "Premium periods": household["n_premium"],
         })
     return pd.DataFrame(rows)
 
@@ -172,7 +172,7 @@ def demand_figure(households: list[dict]) -> go.Figure:
     apply_chart_layout(
         fig,
         height=360,
-        yaxis_title="Capsules per buying week",
+        yaxis_title="Capsules per buying period",
         left=64,
         right=16,
         top=16,
@@ -240,7 +240,7 @@ PRICE_MOVE_TIP = (
 REVENUE_SCENARIO_TIP = (
     "Each column is one set of prices: BS1, BS2, BS3 are the best prices for one household alone (BS1 = HH1's own optimal prices, BS2 = HH2's, BS3 = HH3's), Scenario is the benchmark Scenario prices, and Original DS is the one shared LP price pair for everyone. "
     "Each cell is the revenue that household brings in at those prices. Computed from the data; only the Scenario column changes if you change the scenario prices. "
-    "The Total row sums each column: the company's total weekly revenue at those prices."
+    "The Total row sums each column: the company's total revenue per period at those prices."
 )
 REGRET_TIP = (
     "Regret = how much you miss compared with that household's best case: its best revenue minus the revenue at these prices. "
@@ -295,7 +295,7 @@ def regret_company_caption(revenue: pd.DataFrame, regret: pd.DataFrame) -> str:
     ]
     if pick in leaders:
         lines.append(
-            f"**Revenue totals:** {' / '.join(leaders)} also {'has' if len(leaders) == 1 else 'have'} the highest total weekly revenue, €{top_total:,.2f}."
+            f"**Revenue totals:** {' / '.join(leaders)} also {'has' if len(leaders) == 1 else 'have'} the highest total revenue per period, €{top_total:,.2f}."
         )
     else:
         lines.append(
@@ -341,7 +341,7 @@ def formula_cards(solved: dict, households: list[dict]) -> str:
         _formula_article(
             "Objective",
             [("formula-eq", objective)],
-            ["Weekly revenue from the fixed quantities"],
+            ["Revenue per period from the fixed quantities"],
         )
     ]
     for household in households:
@@ -401,7 +401,7 @@ def result_card(solved: dict, households: list[dict], view: str) -> str:
         f'<p class="sub">{escape(subtitle)}</p>'
         f'<div class="prob-row"><span>Regular price R</span><b>{money(solved["R"])}</b></div>'
         f'<div class="prob-row"><span>Premium price P</span><b>{money(solved["P"])}</b></div>'
-        f'<div class="prob-row"><span>Weekly revenue</span><b>{money(solved["revenue"])}</b></div>'
+        f'<div class="prob-row"><span>Revenue per period</span><b>{money(solved["revenue"])}</b></div>'
         + "".join(product_rows)
         + binding_rows
         + "</div>"
@@ -424,7 +424,7 @@ st.markdown(
     '<div class="kpi-row">'
     f'<div class="kpi"><div class="kpi-label">Original DS Regular price</div><div class="kpi-value">{money(shared["R"])}</div></div>'
     f'<div class="kpi"><div class="kpi-label">Original DS Premium price</div><div class="kpi-value">{money(shared["P"])}</div></div>'
-    f'<div class="kpi"><div class="kpi-label">Total weekly revenue</div><div class="kpi-value">{money(shared["revenue"])}</div></div>'
+    f'<div class="kpi"><div class="kpi-label">Total revenue per period</div><div class="kpi-value">{money(shared["revenue"])}</div></div>'
     f'<div class="kpi"><div class="kpi-label">Assignment</div><div class="kpi-value compact">{escape(short_assignment(shared["assignment"]))}</div></div>'
     "</div>",
     unsafe_allow_html=True,
@@ -450,7 +450,7 @@ chart_note = (
     "Every household line, the shaded feasible region, and the Original DS optimum."
     if view == ALL_VIEW
     else "This household's switching line and its max Regular and max Premium price lines, drawn at full length and labelled with their equations. "
-    "Shading shows where it buys Regular or Premium (white = buys nothing). Each week sits at its exact (R, P), marked with what the household bought. "
+    "Shading shows where it buys Regular or Premium (white = buys nothing). Each period sits at its exact (R, P), marked with what the household bought. "
     "The star is its own optimum (BS1 = HH1's own optimal prices, and so on)."
 )
 
@@ -483,7 +483,7 @@ if not week6.empty and threshold is not None:
     row = week6.iloc[0]
     st.markdown(
         '<div class="callout"><strong>Household 2.</strong> '
-        f"The line is the separating threshold P = {threshold:.2f}, because OLS misclassified week 6 "
+        f"The line is the separating threshold P = {threshold:.2f}, because OLS misclassified period T6 "
         f"(R = {row['P_Regular']:.0f}, P = {row['P_Premium']:.0f}).</div>",
         unsafe_allow_html=True,
     )
@@ -499,9 +499,9 @@ constraints = constraints.rename(columns={"In-sample accuracy": "Accuracy"})
 render_table(constraints)
 
 section_head(
-    "Average weekly demand",
-    "d is the average number of capsules on weeks when that household bought the product. "
-    "Weeks with a zero stay in the sample and are not part of this average.",
+    "Average demand per period",
+    "d is the average number of capsules in the periods when that household bought the product. "
+    "Periods with a zero stay in the sample and are not part of this average.",
 )
 demand_left, demand_right = st.columns([1, 1.15], gap="medium")
 with demand_left:
@@ -570,7 +570,7 @@ scenario_p = s2.number_input(
     key="scenario_p",
 )
 st.caption(
-    f"Scenario = your own test prices. By default these are the average prices charged over the {int(detail['frame']['T'].nunique())} weeks "
+    f"Scenario = your own test prices. By default these are the average prices charged over the {int(detail['frame']['T'].nunique())} periods "
     f"(Regular €{mean_r:.2f}, Premium €{mean_p:.2f}), so the Scenario column shows what the company earns "
     "if it kept charging those averages. Type other prices to test any pair."
 )
@@ -595,7 +595,7 @@ rev_pivot = regret_view.pivot(index="Household", columns="Menu", values="revenue
 reg_pivot = regret_view.pivot(index="Household", columns="Menu", values="regret").rename(columns=_MENU)
 info_title("Revenue by scenario (€)", REVENUE_SCENARIO_TIP)
 rev_table = rev_pivot.reset_index()
-# Total row: column sums of the household revenues (the company's total weekly revenue at each set of prices).
+# Total row: column sums of the household revenues (the company's total revenue per period at each set of prices).
 rev_total = pd.DataFrame([{"Household": "Total", **rev_pivot.sum(axis=0, numeric_only=True).to_dict()}])
 rev_table = pd.concat([rev_table, rev_total[rev_table.columns]], ignore_index=True)
 render_table(rev_table.map(_fmt2))
@@ -677,23 +677,24 @@ def render_methodology(detail: dict) -> None:
     st.markdown('<div style="height:22px"></div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="section-head"><div class="card-title">Model & methodology</div>'
-        '<div class="card-sub">How the prices on this page were obtained, from the weekly table to the optimum.</div></div>',
+        '<div class="card-sub">How the prices on this page were obtained, from the data table to the optimum.</div></div>',
         unsafe_allow_html=True,
     )
 
     st.markdown("#### The data")
     st.markdown(
-        f"The table has **{n_weeks} weekly observations** of three things: the Regular price R, the Premium price P, "
+        f"The table has **{n_weeks} observations** (periods T1–T{n_weeks}) of three things: the Regular price R, the Premium price P, "
         f"and how many capsules each of the **{n_households} households** bought of each product. "
-        "A week with a zero is kept. It is a real choice, not a missing row."
+        "A period with a zero is kept. It is a real choice, not a missing row."
     )
+    st.markdown("**Note:** One period = one row of data (T = 1–11); the data doesn't state the period length, so all revenue is per period.")
 
     st.markdown("#### Fixed quantities")
     st.markdown(
-        "On the weeks a household actually buys a product, the number of capsules barely moves. "
+        "In the periods a household actually buys a product, the number of capsules barely moves. "
         "We freeze that number at its average, written d. Revenue is then just that quantity times a price, which is linear, so the programme below really is a linear programme."
     )
-    st.latex(r"d_{i,\mathrm{product}} = \text{average capsules on weeks household } i \text{ bought that product}")
+    st.latex(r"d_{i,\mathrm{product}} = \text{average capsules in periods household } i \text{ bought that product}")
     st.latex(r"\mathrm{revenue} = \sum_i d_i \times (\text{price of the product household } i \text{ buys})")
     for household in households:
         bits = []
@@ -703,7 +704,7 @@ def render_methodology(detail: dict) -> None:
                 bits.append(f"never buys {product}")
                 continue
             lo, hi = span
-            spread = "the same number every buying week" if abs(hi - lo) < 1e-9 else f"only between {lo:.0f} and {hi:.0f}"
+            spread = "the same number every buying period" if abs(hi - lo) < 1e-9 else f"only between {lo:.0f} and {hi:.0f}"
             bits.append(f"{product} d = {household[key]:.4f} ({spread})")
         st.markdown(f"- **{household['label']}:** " + "; ".join(bits) + ".")
 
@@ -721,20 +722,20 @@ def render_methodology(detail: dict) -> None:
             level = next(float(line["fixed_threshold"]) for line in used if line.get("fixed_threshold") is not None)
             ols = ols_switch_line(frame, household)
             misses = _ols_misses(frame, household)
-            st.markdown(f"**{household['label']}.** The OLS contour on their buying weeks would be")
+            st.markdown(f"**{household['label']}.** The OLS contour on their buying periods would be")
             if ols is not None and contour_terms(ols) is not None:
                 st.latex(_latex_line(*contour_terms(ols)))
             if misses:
                 described = "; ".join(
-                    f"week {miss['week']} (R = {miss['R']:.0f}, P = {miss['P']:.0f}) was {miss['observed']}, "
+                    f"period T{miss['week']} (R = {miss['R']:.0f}, P = {miss['P']:.0f}) was {miss['observed']}, "
                     f"while the OLS line called it {miss['predicted']}"
                     for miss in misses
                 )
                 st.markdown(f"It misclassifies {described}.")
             else:
-                st.markdown("That fit matches every buying week.")
+                st.markdown("That fit matches every buying period.")
             st.markdown(
-                f"The programme therefore uses the horizontal threshold that separates those weeks. "
+                f"The programme therefore uses the horizontal threshold that separates those periods. "
                 f"In-sample accuracy of the line actually used: {accuracy}."
             )
             st.latex(rf"P = {level:.4f}")
@@ -761,7 +762,7 @@ def render_methodology(detail: dict) -> None:
     )
     st.markdown(
         "- **Buys both products and never buys nothing.** A 0/1 OLS on \"bought Regular\" or \"bought Premium\" gives the switching line again, "
-        "because every week is one product or the other. So the cap is the midpoint between the highest price at which it bought that product "
+        "because every period is one product or the other. So the cap is the midpoint between the highest price at which it bought that product "
         "and the next higher tested price at which it did not (it switched instead).\n"
         "- **Sometimes buys nothing.** Its bought / not-bought line (fitted by OLS on a 0/1 bought label, at 0.5) already is its max price for the product it buys, so no second cap is added.\n"
         "- **Never buys Regular.** Its Regular reservation price is below the lowest tested Regular price. "
@@ -810,7 +811,7 @@ def render_methodology(detail: dict) -> None:
     binding = ", ".join(name.split(" so that ", 1)[-1] for name in shared["tight"]) or "none"
     st.markdown(
         f"The best feasible menu is **{shared['assignment_label']}**. "
-        f"The optimum is R = {money(shared['R'])}, P = {money(shared['P'])}, weekly revenue {money(shared['revenue'])}. "
+        f"The optimum is R = {money(shared['R'])}, P = {money(shared['P'])}, revenue per period {money(shared['revenue'])}. "
         f"It is a corner of the feasible set. Binding there: {binding}."
     )
 
@@ -842,7 +843,7 @@ def render_methodology(detail: dict) -> None:
             f"- The optimum Regular price is {money(shared['R'])}, inside a box whose top is the highest observed Regular price, {money(cap)}."
         )
     st.markdown(
-        f"- **The sample is small:** {n_weeks} weeks and {n_households} households. The lines and the optimum are a reading of this table, not a forecast."
+        f"- **The sample is small:** {n_weeks} periods and {n_households} households. The lines and the optimum are a reading of this table, not a forecast."
     )
     st.markdown(
         "- **Quantities are fixed.** Inside a region, selling at a higher price does not reduce d. That is why revenue is linear, and why a price on the edge of a region looks attractive. It is not a demand curve."
@@ -871,14 +872,14 @@ def render_line_origins(detail: dict) -> None:
 
     section_head(
         "Where the line equations come from",
-        "How a week becomes a 0 or a 1, how least squares turns that into a line, and why another line through the same gap is also allowed.",
+        "How a period becomes a 0 or a 1, how least squares turns that into a line, and why another line through the same gap is also allowed.",
     )
 
     st.markdown("#### How ordinary least squares draws the line")
     st.markdown(
-        "For each household, label every week with a number y. "
+        "For each household, label every period with a number y. "
         "**Premium is 1 and Regular is 0.** "
-        "Household 3 never buys Regular, so there y is 1 on a week they bought something and 0 on a week they bought nothing."
+        "Household 3 never buys Regular, so there y is 1 in a period they bought something and 0 in a period they bought nothing."
     )
     st.markdown(
         "Least squares then finds the intercept a and the slopes b and c that make"
@@ -893,14 +894,14 @@ def render_line_origins(detail: dict) -> None:
     st.latex(r"P = \frac{0.5 - a - b R}{c} = m R + k")
     st.latex(r"m = -\frac{b}{c}, \qquad k = \frac{0.5 - a}{c}")
 
-    st.markdown(f"#### {focus_label}, one week at a time")
+    st.markdown(f"#### {focus_label}, one period at a time")
     st.markdown(
-        f"These are the {len(focus['rows'])} weeks in {focus_label}'s regression. "
+        f"These are the {len(focus['rows'])} periods in {focus_label}'s regression. "
         f"y = 1 means {focus['positive_label']}."
     )
     week_table = pd.DataFrame([
         {
-            "Week": row["week"],
+            "Period (T)": row["week"],
             "R": f"{row['R']:.0f}",
             "P": f"{row['P']:.0f}",
             "Choice": "nothing" if row["observed"] == "None" else row["observed"],
@@ -931,14 +932,14 @@ def render_line_origins(detail: dict) -> None:
     called_text = "nothing" if called == "None" else called
     match = "which matches" if called == example["observed"] else "which does not match"
     st.markdown(
-        f"Week {example['week']} has R = {example['R']:.0f} and P = {example['P']:.0f}. Plug those prices in:"
+        f"Period T{example['week']} has R = {example['R']:.0f} and P = {example['P']:.0f}. Plug those prices in:"
     )
     st.latex(
         rf"\hat{{y}} = a + b \cdot {example['R']:.0f} + c \cdot {example['P']:.0f} = {example['fitted']:.4f}"
     )
     st.markdown(
         f"{example['fitted']:.4f} is {side} one half, so the line says **{called_text}**. "
-        f"{focus_label} bought {observed} that week, {match}."
+        f"{focus_label} bought {observed} in that period, {match}."
     )
 
     with st.expander("The same fit in matrix form"):
@@ -958,7 +959,7 @@ def render_line_origins(detail: dict) -> None:
     st.markdown("#### All three households")
     st.markdown(
         "The same regression for each household. Accuracy is how many of the "
-        f"{fits[0]['n']} weeks the fitted line classifies correctly. "
+        f"{fits[0]['n']} periods the fitted line classifies correctly. "
         "Household 2's row is the OLS line, not the threshold the programme uses."
     )
     coef_rows = []
@@ -989,7 +990,7 @@ def render_line_origins(detail: dict) -> None:
         misses = _ols_misses(frame, threshold_household)
         if misses:
             described = "; ".join(
-                f"week {miss['week']} (R = {miss['R']:.0f}, P = {miss['P']:.0f}) was {miss['observed']}, "
+                f"period T{miss['week']} (R = {miss['R']:.0f}, P = {miss['P']:.0f}) was {miss['observed']}, "
                 f"and the OLS line called it {miss['predicted']}"
                 for miss in misses
             )
@@ -997,7 +998,7 @@ def render_line_origins(detail: dict) -> None:
                 (row["fitted"] for row in threshold_fit["rows"] if row["week"] == misses[0]["week"]),
                 None,
             )
-            fitted_bit = f" The fitted value that week is {miss_fit:.4f}." if miss_fit is not None else ""
+            fitted_bit = f" The fitted value in that period is {miss_fit:.4f}." if miss_fit is not None else ""
             st.markdown(
                 f'<div class="callout"><strong>{escape(threshold_household["label"])}.</strong> '
                 f"OLS gets {threshold_fit['correct']}/{threshold_fit['n']}. It misclassifies {escape(described)}."
@@ -1009,9 +1010,9 @@ def render_line_origins(detail: dict) -> None:
 
     st.markdown("#### Why other lines are also valid")
     st.markdown(
-        "The weeks fall into two groups with a gap between them, so many lines split the sample cleanly. "
+        "The periods fall into two groups with a gap between them, so many lines split the sample cleanly. "
         "A line drawn through that gap — by hand, or by a max-margin rule — can score as well as OLS. "
-        "OLS is pulled toward every week, which is why Household 1's fitted line is steeper than a line that only has to sit in the gap."
+        "OLS is pulled toward every period, which is why Household 1's fitted line is steeper than a line that only has to sit in the gap."
     )
     st.markdown("These three lines are of that kind:")
     for household, fit in zip(households, fits):
@@ -1043,14 +1044,14 @@ def render_line_origins(detail: dict) -> None:
         st.markdown(
             f"Put into the same linear programme — same quantities, same price box — they give "
             f"**{alternative['assignment_label']}**, at R = {money(alternative['R'])}, "
-            f"P = {money(alternative['P'])}, weekly revenue {money(alternative['revenue'])}. "
+            f"P = {money(alternative['P'])}, revenue per period {money(alternative['revenue'])}. "
             f"The OLS menu, with Household 2 on its threshold, is {money(shared['revenue'])} "
             f"at P = {money(shared['P'])}."
         )
     focus_alt_m = ALTERNATIVE_CONTOURS[focus_label][0]
     st.markdown(
         f"{focus_label}'s OLS slope is {focus['m']:.2f}. The other line's slope is {focus_alt_m:.2f}. "
-        "Every week tugs the OLS line, including weeks far from the boundary. "
+        "Every period tugs the OLS line, including periods far from the boundary. "
         "A line placed in the gap only has to keep the two groups apart, so it can be much flatter."
     )
     st.markdown(

@@ -3,7 +3,7 @@
 Decision variables are the Regular price R and the Premium price P. Each
 household buys a fixed quantity of one product, so revenue is linear in the
 two prices. Which product they buy is a straight line in the R-P plane, fitted
-by OLS from the weekly data (a linear probability model). Product assignments
+by OLS from the per-period data (a linear probability model). Product assignments
 are separate linear programmes; the best feasible one is kept.
 
 The earlier successive linear programme of quadratic OLS revenue has been
@@ -11,8 +11,8 @@ retired. This module is the only price model the app uses.
 
 Class-board numbers are not copied from anywhere. Slopes, intercepts, and
 quantities are estimated here. Household 2 is the exception: its switching
-line is the horizontal threshold P = 77.5, which separates every week. The
-OLS line misclassified week 6 (R = 55, P = 80).
+line is the horizontal threshold P = 77.5, which separates every period. The
+OLS line misclassified period T6 (R = 55, P = 80).
 """
 
 from __future__ import annotations
@@ -35,11 +35,11 @@ DEFAULT_CSV = str(Path(__file__).resolve().parent / "coffee_capsules_data.csv")
 FORMULATION_SUMMARY = """
 Decision variables are the Regular price R and the Premium price P, both non-negative.
 
-Each household buys a fixed quantity of one product (the average units bought on weeks they chose that product). Revenue is therefore linear: quantity times the price of the product they buy.
+Each household buys a fixed quantity of one product (the average units bought in the periods they chose that product). Revenue is therefore linear: quantity times the price of the product they buy.
 
-Each household also has a max Regular price line and a max Premium price line (reservation prices), estimated from the weeks it did and did not buy each product; the programme keeps a household that buys a product on or under that product's line.
+Each household also has a max Regular price line and a max Premium price line (reservation prices), estimated from the periods in which it did and did not buy each product; the programme keeps a household that buys a product on or under that product's line.
 
-The product is not a decision variable inside one programme. Each household is a straight line in the R-P plane. Household 1 and Household 3 are fitted by OLS (a linear probability model at the 0.5 contour). Household 2's line is the horizontal threshold P = 77.5, because the OLS fit misclassified week 6 (R = 55, P = 80). One side of the line is Premium, the other is Regular, and a household that sometimes buys nothing also has a stop-buying line. Each assignment of products to households is its own linear programme. The assignment with the highest feasible revenue is the shared menu.
+The product is not a decision variable inside one programme. Each household is a straight line in the R-P plane. Household 1 and Household 3 are fitted by OLS (a linear probability model at the 0.5 contour). Household 2's line is the horizontal threshold P = 77.5, because the OLS fit misclassified period T6 (R = 55, P = 80). One side of the line is Premium, the other is Regular, and a household that sometimes buys nothing also has a stop-buying line. Each assignment of products to households is its own linear programme. The assignment with the highest feasible revenue is the shared menu.
 
 `scipy.optimize.linprog` minimises, so the objective vector is the negated quantity vector. Upper price bounds are the highest Regular and Premium prices in the experiment, so a price cannot run off to infinity. Those bounds are data, not demand coefficients.
 """.strip()
@@ -56,7 +56,7 @@ LINE_COLOR = {
 }
 _TOL = 1e-7
 # Premium at or below this Premium price, Regular at or above it.
-# Midpoint of the gap between HH2's highest Premium week (75) and lowest Regular week (80).
+# Midpoint of the gap between HH2's highest Premium period (75) and lowest Regular period (80).
 HH2_SWITCH_THRESHOLD = 77.5
 # The linear programme also enforces each household's max Regular / max Premium price line.
 # Set to False to go back to the switching (and stop) lines only.
@@ -188,7 +188,7 @@ def contour_line(slope: float, intercept: float, kind: str) -> dict:
 
 
 def classify_accuracy(frame: pd.DataFrame, household: dict, line: dict) -> tuple[int, int]:
-    """Weeks whose observed product matches the product implied by `line`."""
+    """Periods whose observed product matches the product implied by `line`."""
     prefix = household["prefix"]
     probe = {"lines": [line], "only_product": household.get("only_product")}
     correct = 0
@@ -205,8 +205,8 @@ def ols_regression(frame: pd.DataFrame, household: dict) -> dict:
     """Least-squares line for one household, and the rows that produced it.
 
     A household that buys both products is a Premium/Regular regression on the
-    weeks they bought something. A household that never buys Regular (Household 3)
-    is a bought/not-bought regression on every week. Both are y = a + b R + c P.
+    periods they bought something. A household that never buys Regular (Household 3)
+    is a bought/not-bought regression on every period. Both are y = a + b R + c P.
     """
     prefix = household["prefix"]
     regular_qty = frame[f"{prefix}_Regular"].to_numpy(dtype=float)
@@ -271,7 +271,7 @@ def ols_regression(frame: pd.DataFrame, household: dict) -> dict:
 
 
 def ols_switch_line(frame: pd.DataFrame, household: dict) -> dict | None:
-    """OLS linear probability model on weeks the household bought something.
+    """OLS linear probability model on periods the household bought something.
 
     Premium is 1 and Regular is 0. Households that replace this fit with a
     threshold still get the OLS line here, so the page can show what it missed.
@@ -396,7 +396,7 @@ def reservation_caps(frame: pd.DataFrame, prefix: str, lines: list[dict]) -> lis
       as the switching line (OLS 0/1 bought / not bought at 0.5, or the given line). That
       line is its max price for the product it buys, so no second Premium cap is added.
     * Otherwise a 0/1 OLS on "bought Regular" (or "bought Premium") is the switching line
-      again, because every week is one or the other. The cap is then the midpoint between
+      again, because every period is one or the other. The cap is then the midpoint between
       the highest price at which it bought that product and the next higher tested price
       at which it did not.
     * A household that never buys Regular gets an R line at the lowest tested Regular price:
@@ -1632,7 +1632,7 @@ def _add_product_regions(fig: go.Figure, household: dict, x_range: list[float], 
 
 
 def _add_observations(fig: go.Figure, frame: pd.DataFrame, household: dict) -> None:
-    """Every week at its exact (R, P), marked with what this household bought that week."""
+    """Every period at its exact (R, P), marked with what this household bought in that period."""
     prefix = household["prefix"]
     regular_price = frame["P_Regular"].to_numpy(dtype=float)
     premium_price = frame["P_Premium"].to_numpy(dtype=float)
@@ -1650,8 +1650,8 @@ def _add_observations(fig: go.Figure, frame: pd.DataFrame, household: dict) -> N
                 x=regular_price[mask],
                 y=premium_price[mask],
                 mode="markers+text",
-                name=f"Week bought {name}" if name != "No purchase" else "Week bought nothing",
-                text=[f"W{int(week)}" for week in weeks[mask]],
+                name=f"Period bought {name}" if name != "No purchase" else "Period bought nothing",
+                text=[f"T{int(week)}" for week in weeks[mask]],
                 textposition="top center",
                 textfont=dict(family=_CHART_FONT, size=10, color=_PRODUCT_INK[name]),
                 marker=dict(
@@ -1662,7 +1662,7 @@ def _add_observations(fig: go.Figure, frame: pd.DataFrame, household: dict) -> N
                 ),
                 customdata=np.column_stack([weeks[mask], quantity[mask]]),
                 hovertemplate=(
-                    "Week %{customdata[0]:.0f}<br>R=%{x:.0f}<br>P=%{y:.0f}"
+                    "T%{customdata[0]:.0f}<br>R=%{x:.0f}<br>P=%{y:.0f}"
                     "<br>quantity %{customdata[1]:.0f}<extra>" + name + "</extra>"
                 ),
             )
@@ -1671,7 +1671,7 @@ def _add_observations(fig: go.Figure, frame: pd.DataFrame, household: dict) -> N
 
 def household_figure(detail: dict, label: str) -> go.Figure:
     """One household: switching line and both max-price lines at full length, the region where
-    each product is bought, every observed week, and the household's own optimum."""
+    each product is bought, every observed period, and the household's own optimum."""
     item = next(entry for entry in detail["per_household"] if entry["household"]["label"] == label)
     household = item["household"]
     solved = item["programme"]["best"]
