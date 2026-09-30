@@ -1340,7 +1340,7 @@ def _bar_chart(table: pd.DataFrame, title: str, yaxis_title: str) -> go.Figure:
 
 def structural_sensitivity_figure(table: pd.DataFrame) -> go.Figure:
     coef = table[table["kind"] == "line coefficient"]
-    return _bar_chart(coef, "Shared revenue when a line moves ±10%", "Change in shared revenue (€)")
+    return _bar_chart(coef, "Original DS revenue when a line moves ±10%", "Change in Original DS revenue (€)")
 
 
 def _grouped_bar_center_offsets(n_series: int, bargap: float = 0.2) -> list[float]:
@@ -1364,7 +1364,7 @@ def price_move_figure(table: pd.DataFrame) -> go.Figure:
     )
     plotted = moves.copy()
     plotted.loc[outside, "delta_revenue"] = float("nan")
-    fig = _bar_chart(plotted, "Revenue when that household's price moves ±10%", "Change versus own optimum (€)")
+    fig = _bar_chart(plotted, "Revenue when that household's price moves ±10%", "Change versus own optimum, BS1–BS3 (€)")
     # Pin the gap so the annotation sits on the empty bar's slot.
     fig.update_layout(bargap=0.2, bargroupgap=0)
     present = [name for name in LINE_COLOR if (moves["Household"] == name).any()]
@@ -1493,6 +1493,12 @@ def _move_bullet(household: dict, own: dict, row) -> str:
     return f"{name}: still buys {product} ({calc}), {_signed(delta)}"
 
 
+def _bs_label(label: str) -> str:
+    """Display name for a household's own optimal prices: Household 1 -> BS1."""
+    number = label.split()[-1]
+    return f"BS{number}" if number.isdigit() else f"{label} own optimum"
+
+
 def price_move_overview(detail: dict, moves: pd.DataFrame) -> str:
     """Compact card under the price-move chart. Every figure comes from the solved rows."""
     if moves.empty:
@@ -1513,7 +1519,7 @@ def price_move_overview(detail: dict, moves: pd.DataFrame) -> str:
         columns.append(
             '<div class="overview-house">'
             f'<div class="overview-kicker">{escape(str(label))}</div>'
-            f'<p class="overview-best">Best: {escape(product)} at R {_num(own["R"])}, '
+            f'<p class="overview-best">{escape(_bs_label(str(label)))} (own optimal prices): {escape(product)} at R {_num(own["R"])}, '
             f'P {_num(own["P"])}, revenue {_num(own["revenue"])}.</p>'
             f'<ul class="overview-moves">{bullets}</ul>'
             "</div>"
@@ -1532,10 +1538,10 @@ def price_move_overview(detail: dict, moves: pd.DataFrame) -> str:
 
 
 _MENU_LABEL = {
-    "Shared LP optimum": "Shared LP",
-    "Household 1 LP optimum": "HH1 LP",
-    "Household 2 LP optimum": "HH2 LP",
-    "Household 3 LP optimum": "HH3 LP",
+    "Shared LP optimum": "Original DS",
+    "Household 1 LP optimum": "BS1",
+    "Household 2 LP optimum": "BS2",
+    "Household 3 LP optimum": "BS3",
     "Scenario prices": "Scenario",
 }
 

@@ -53,7 +53,7 @@ ALTERNATIVE_CONTOURS = {
 EXAMPLE_WEEK = 4
 
 DATA_CSV = str(Path(__file__).resolve().parent / "coffee_capsules_data.csv")
-ALL_VIEW = "All households (shared prices)"
+ALL_VIEW = "All households (Original DS prices)"
 
 st.set_page_config(page_title="Revenue-maximising prices", page_icon="☕", layout="wide", initial_sidebar_state="collapsed")
 
@@ -145,7 +145,7 @@ def short_assignment(assignment: dict) -> str:
 def active_programme(detail: dict, view: str) -> tuple[dict, list[dict], str]:
     """Solved programme, the households it is about, and a chart title."""
     if view == ALL_VIEW:
-        return detail["shared"]["best"], detail["households"], "Shared prices"
+        return detail["shared"]["best"], detail["households"], "Original DS prices (shared LP)"
     item = next(entry for entry in detail["per_household"] if entry["household"]["label"] == view)
     return item["programme"]["best"], [item["household"]], view
 
@@ -238,12 +238,12 @@ PRICE_MOVE_TIP = (
     "No bar = that price doesn't affect it."
 )
 REVENUE_SCENARIO_TIP = (
-    "Each column is one set of prices: the best prices for one household alone (HH LP), the benchmark Scenario prices, or the one Shared LP price pair for everyone. "
+    "Each column is one set of prices: BS1, BS2, BS3 are the best prices for one household alone (BS1 = HH1's own optimal prices, BS2 = HH2's, BS3 = HH3's), Scenario is the benchmark Scenario prices, and Original DS is the one shared LP price pair for everyone. "
     "Each cell is the revenue that household brings in at those prices. Computed from the data; only the Scenario column changes if you change the scenario prices."
 )
 REGRET_TIP = (
     "Regret = how much you miss compared with that household's best case: its best revenue minus the revenue at these prices. "
-    "0 means these prices are already best for it; bigger = worse. Shared LP has the smallest regret overall."
+    "0 means these prices are already best for it; bigger = worse. Original DS (the shared LP prices) has the smallest regret overall."
 )
 
 
@@ -321,8 +321,8 @@ def result_card(solved: dict, households: list[dict], view: str) -> str:
         product_rows.append(
             f'<div class="prob-row"><span>{household["label"]}</span><b>{product} · d = {quantity:.2f}</b></div>'
         )
-    title = "Shared menu" if view == ALL_VIEW else solved["assignment"][view]
-    subtitle = "All households, one price pair" if view == ALL_VIEW else f"{view} solved on its own line"
+    title = "Original DS" if view == ALL_VIEW else solved["assignment"][view]
+    subtitle = "All households, one shared LP price pair" if view == ALL_VIEW else f"{view} solved on its own line"
     tight = solved.get("tight") or []
     if tight:
         binding_rows = "".join(
@@ -353,14 +353,14 @@ st.markdown(
     '<div class="eyebrow">Whiteboard linear programme</div>'
     "<h1>Revenue-maximising prices</h1>"
     '<p class="lede">Each household buys a fixed quantity of one product, so revenue is linear in the Regular price R and the Premium price P. '
-    "A line in that plane decides the product. The shared menu is the feasible assignment with the highest revenue.</p>",
+    "A line in that plane decides the product. The Original DS menu (the shared LP optimum) is the feasible assignment with the highest revenue.</p>",
     unsafe_allow_html=True,
 )
 
 st.markdown(
     '<div class="kpi-row">'
-    f'<div class="kpi"><div class="kpi-label">Shared Regular price</div><div class="kpi-value">{money(shared["R"])}</div></div>'
-    f'<div class="kpi"><div class="kpi-label">Shared Premium price</div><div class="kpi-value">{money(shared["P"])}</div></div>'
+    f'<div class="kpi"><div class="kpi-label">Original DS Regular price</div><div class="kpi-value">{money(shared["R"])}</div></div>'
+    f'<div class="kpi"><div class="kpi-label">Original DS Premium price</div><div class="kpi-value">{money(shared["P"])}</div></div>'
     f'<div class="kpi"><div class="kpi-label">Total weekly revenue</div><div class="kpi-value">{money(shared["revenue"])}</div></div>'
     f'<div class="kpi"><div class="kpi-label">Assignment</div><div class="kpi-value compact">{escape(short_assignment(shared["assignment"]))}</div></div>'
     "</div>",
@@ -375,7 +375,7 @@ view = st.segmented_control(
     key="lp_view",
     label_visibility="collapsed",
     width="stretch",
-    format_func=lambda option: "All households" if option == ALL_VIEW else option,
+    format_func=lambda option: "All households (Original DS)" if option == ALL_VIEW else option,
     wrap=True,
 )
 if view is None:
@@ -384,9 +384,9 @@ if view is None:
 solved, shown, chart_title = active_programme(detail, view)
 figure = shared_figure(detail) if view == ALL_VIEW else household_figure(detail, view)
 chart_note = (
-    "Every household line, the shaded feasible region, and the shared optimum."
+    "Every household line, the shaded feasible region, and the Original DS optimum."
     if view == ALL_VIEW
-    else "This household's line, the weeks they were observed, the feasible region, and their own optimum."
+    else "This household's line, the weeks they were observed, the feasible region, and their own optimum (BS1 = HH1's own optimal prices, and so on)."
 )
 
 st.markdown(
@@ -482,8 +482,8 @@ if not price_moves.empty:
 
 section_head(
     "Scenario comparison and regret",
-    "The scenario is a Regular / Premium price pair. Regret is a household's own LP revenue minus revenue at that menu. "
-    "The cell on a household's own optimum is zero.",
+    "The scenario is a Regular / Premium price pair. Original DS = the shared LP prices; BS1 = HH1's own optimal prices, BS2 = HH2's, BS3 = HH3's. Regret is a household's own LP revenue minus revenue at that menu. "
+    "The cell on a household's own optimum (its BS column) is zero.",
 )
 mean_r = round(float(detail["frame"]["P_Regular"].mean()), 2)
 mean_p = round(float(detail["frame"]["P_Premium"].mean()), 2)
@@ -515,17 +515,17 @@ chart_with_tip(
     REGRET_TIP,
 )
 _MENU = {
-    "Shared LP optimum": "Shared LP",
-    "Household 1 LP optimum": "HH1 LP",
-    "Household 2 LP optimum": "HH2 LP",
-    "Household 3 LP optimum": "HH3 LP",
+    "Shared LP optimum": "Original DS",
+    "Household 1 LP optimum": "BS1",
+    "Household 2 LP optimum": "BS2",
+    "Household 3 LP optimum": "BS3",
     "Scenario prices": "Scenario",
 }
 rev_pivot = regret_view.pivot(index="Household", columns="Menu", values="revenue").rename(columns=_MENU)
 reg_pivot = regret_view.pivot(index="Household", columns="Menu", values="regret").rename(columns=_MENU)
 info_title("Revenue by scenario (€)", REVENUE_SCENARIO_TIP)
 render_table(rev_pivot.reset_index().map(_fmt2))
-info_title("Regret versus that household's LP optimum (€)", REGRET_TIP)
+info_title("Regret versus that household's own optimal prices, BS1–BS3 (€)", REGRET_TIP)
 render_table(reg_pivot.reset_index().map(_fmt2))
 
 
@@ -712,7 +712,7 @@ def render_methodology(detail: dict) -> None:
     )
     st.markdown(
         "- **Scenario.** A Regular / Premium pair — by default the average prices in the table — is scored with the same lines. "
-        "Menus in the comparison are the shared optimum, each household's own optimum, and that scenario."
+        "Menus in the comparison are Original DS (the shared LP optimum), BS1, BS2, BS3 (each household's own optimal prices; BS1 = HH1's own optimal prices), and that scenario."
     )
     st.latex(r"\mathrm{regret}_i(\mathrm{menu}) = \mathrm{revenue}_i(\mathrm{own\ optimum}) - \mathrm{revenue}_i(\mathrm{menu})")
     st.markdown("Regret is zero on a household's own optimum, and positive when another menu earns them less.")
