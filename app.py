@@ -287,18 +287,19 @@ def regret_company_caption(revenue: pd.DataFrame, regret: pd.DataFrame) -> str:
     lines = [
         "**How to read it:** each cell is the revenue the company gives up from that household "
         "versus that household's best prices; 0 = already best, lower is better.",
+        "**Total** = all revenue given up across households by that choice; lower is better.",
         f"**Risk-averse company (minimax regret):** choose {' / '.join(averse)}, "
-        f"the smallest worst-case regret (max €{best_worst:,.2f}).",
+        f"because the biggest number in its column of the regret table (its worst case, Total row excluded) is the smallest: €{best_worst:,.2f}.",
         f"**Risk-tolerant company (maximax revenue):** choose {' / '.join(tolerant)}, "
-        f"the highest single revenue cell (€{top_cell:,.2f} from {sources}); {idle_text}.",
+        f"the highest single revenue cell in the Revenue by scenario table (€{top_cell:,.2f} from {sources}); {idle_text}.",
     ]
     if pick in leaders:
         lines.append(
-            f"**Totals:** {' / '.join(leaders)} also {'has' if len(leaders) == 1 else 'have'} the highest total weekly revenue, €{top_total:,.2f}."
+            f"**Revenue totals:** {' / '.join(leaders)} also {'has' if len(leaders) == 1 else 'have'} the highest total weekly revenue, €{top_total:,.2f}."
         )
     else:
         lines.append(
-            f"**Totals:** {' / '.join(leaders)} {'brings' if len(leaders) == 1 else 'bring'} €{top_total:,.2f} in total "
+            f"**Revenue totals:** {' / '.join(leaders)} {'brings' if len(leaders) == 1 else 'bring'} €{top_total:,.2f} in total "
             f"versus €{pick_total:,.2f} for {pick}."
         )
     return "  \n".join(line.replace("$", r"\$") for line in lines)
@@ -587,7 +588,11 @@ rev_total = pd.DataFrame([{"Household": "Total", **rev_pivot.sum(axis=0, numeric
 rev_table = pd.concat([rev_table, rev_total[rev_table.columns]], ignore_index=True)
 render_table(rev_table.map(_fmt2))
 info_title("Regret versus that household's own optimal prices, BS1–BS3 (€)", REGRET_TIP)
-render_table(reg_pivot.reset_index().map(_fmt2))
+reg_table = reg_pivot.reset_index()
+# Total row: all revenue given up across households at each set of prices, summed from the displayed (cent-rounded) cells so the column adds up on screen. Display only; the caption uses reg_pivot without it.
+reg_total = pd.DataFrame([{"Household": "Total (money left out)", **reg_pivot.round(2).sum(axis=0, numeric_only=True).round(2).to_dict()}])
+reg_table = pd.concat([reg_table, reg_total[reg_table.columns]], ignore_index=True)
+render_table(reg_table.map(_fmt2))
 st.caption(regret_company_caption(rev_pivot, reg_pivot))
 
 
