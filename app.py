@@ -248,6 +248,62 @@ REGRET_TIP = (
 )
 
 
+def _join_names(names: list[str]) -> str:
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _tie_order(names: list[str]) -> list[str]:
+    """Original DS first in a tie, then the table's column order."""
+    return sorted(names, key=lambda name: (name != "Original DS",))
+
+
+def regret_company_caption(revenue: pd.DataFrame, regret: pd.DataFrame) -> str:
+    """Company view of the regret table. Every figure is read from the displayed tables (rounded to cents)."""
+    totals = revenue.astype(float).sum(axis=0).round(2)  # same sums as the Total row
+    revenue = revenue.astype(float).round(2)
+    regret = regret.astype(float).round(2)
+    short = {label: "HH" + str(label).split()[-1] for label in revenue.index}
+
+    worst = regret.max(axis=0)
+    best_worst = float(worst.min())
+    averse = _tie_order([str(c) for c in regret.columns if abs(float(worst[c]) - best_worst) < 0.005])
+
+    top_cell = float(revenue.to_numpy().max())
+    tolerant = _tie_order([str(c) for c in revenue.columns if abs(float(revenue[c].max()) - top_cell) < 0.005])
+    pick = tolerant[0]
+    sources = _join_names([short[h] for h in revenue.index if abs(float(revenue.loc[h, pick]) - top_cell) < 0.005])
+    idle = [short[h] for h in revenue.index if abs(float(revenue.loc[h, pick])) < 0.005]
+    if not idle:
+        idle_text = "no household drops to €0"
+    else:
+        idle_text = f"{_join_names(idle)} {'buys' if len(idle) == 1 else 'buy'} nothing"
+
+    top_total = float(totals.max())
+    leaders = _tie_order([str(c) for c in revenue.columns if abs(float(totals[c]) - top_total) < 0.005])
+    pick_total = float(totals[pick])
+
+    lines = [
+        "**How to read it:** each cell is the revenue the company gives up from that household "
+        "versus that household's best prices; 0 = already best, lower is better.",
+        f"**Risk-averse company (minimax regret):** choose {' / '.join(averse)}, "
+        f"the smallest worst-case regret (max €{best_worst:,.2f}).",
+        f"**Risk-tolerant company (maximax revenue):** choose {' / '.join(tolerant)}, "
+        f"the highest single revenue cell (€{top_cell:,.2f} from {sources}); {idle_text}.",
+    ]
+    if pick in leaders:
+        lines.append(
+            f"**Totals:** {' / '.join(leaders)} also {'has' if len(leaders) == 1 else 'have'} the highest total weekly revenue, €{top_total:,.2f}."
+        )
+    else:
+        lines.append(
+            f"**Totals:** {' / '.join(leaders)} {'brings' if len(leaders) == 1 else 'bring'} €{top_total:,.2f} in total "
+            f"versus €{pick_total:,.2f} for {pick}."
+        )
+    return "  \n".join(line.replace("$", r"\$") for line in lines)
+
+
 def info_title(title: str, tip: str) -> None:
     """Heading with Streamlit's built-in question-mark tooltip."""
     st.subheader(title, help=tip)
@@ -532,6 +588,7 @@ rev_table = pd.concat([rev_table, rev_total[rev_table.columns]], ignore_index=Tr
 render_table(rev_table.map(_fmt2))
 info_title("Regret versus that household's own optimal prices, BS1–BS3 (€)", REGRET_TIP)
 render_table(reg_pivot.reset_index().map(_fmt2))
+st.caption(regret_company_caption(rev_pivot, reg_pivot))
 
 
 def _latex_line(slope: float, icept: float, digits: int = 4) -> str:
