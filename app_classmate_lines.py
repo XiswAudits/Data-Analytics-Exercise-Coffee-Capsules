@@ -485,6 +485,11 @@ def formula_cards(solved: dict, households: list[dict]) -> str:
             else:
                 blocks.append(("formula-lead", "Stops buying above"))
                 blocks.append(("formula-eq", format_display_equation(line)))
+        for cap in household.get("caps") or []:
+            name = "Regular" if cap["cap_axis"] == "R" else "Premium"
+            lead = f"Max {name} price" if cap.get("in_lp") else f"Max {name} price is below (never bought {name})"
+            blocks.append(("formula-lead", lead))
+            blocks.append(("formula-eq", format_display_equation(cap)))
         cards.append(
             _formula_article(
                 household["label"],
@@ -591,7 +596,9 @@ figure = shared_figure(detail) if view == ALL_VIEW else household_figure(detail,
 chart_note = (
     "Every household line, the shaded feasible region, and the Original DS optimum."
     if view == ALL_VIEW
-    else "This household's line, the weeks they were observed, the feasible region, and their own optimum (BS1 = HH1's own optimal prices, and so on)."
+    else "This household's switching line and its max Regular and max Premium price lines, drawn at full length and labelled with their equations. "
+    "Shading shows where it buys Regular or Premium (white = buys nothing). Each week sits at its exact (R, P), marked with what the household bought. "
+    "The star is its own optimum (BS1 = HH1's own optimal prices, and so on)."
 )
 
 st.markdown(
@@ -630,7 +637,7 @@ if not week6.empty and threshold is not None:
 
 section_head(
     "Constraints",
-    "Every side of each switching line, the price box, and the objective of the programme in view. "
+    "Every side of each switching line and each max-price line, the price box, and the objective of the programme in view. "
     "Binding is evaluated at that programme's optimum. A side marked “not in this programme” is the other side of the line.",
 )
 constraints = constraint_table(solved, detail["households"] if view == ALL_VIEW else shown).copy()
@@ -857,6 +864,40 @@ def render_methodology(detail: dict, ols_detail: dict) -> None:
         else:
             st.markdown("Premium on or below this line, Regular above it.")
 
+    st.markdown("#### Max-price (reservation) lines")
+    st.markdown(
+        "Each household also has a **max Regular price** and a **max Premium price**, its reservation prices. "
+        "Like the switching line they are straight lines, drawn at full length on the household chart."
+    )
+    st.markdown(
+        "- **Buys both products and never buys nothing.** A 0/1 OLS on \"bought Regular\" or \"bought Premium\" gives the switching line again, "
+        "because every week is one product or the other. So the cap is the midpoint between the highest price at which it bought that product "
+        "and the next higher tested price at which it did not (it switched instead).\n"
+        "- **Sometimes buys nothing.** Its bought / not-bought line (the given line) already is its max price for the product it buys, so no second cap is added.\n"
+        "- **Never buys Regular.** Its Regular reservation price is below the lowest tested Regular price. "
+        "That line is drawn for reference; the programme never assigns it Regular, so no switching line can be estimated either."
+    )
+    for household in households:
+        bits = []
+        for line in household["lines"]:
+            role = "Premium vs Regular" if line["kind"] == "switch" else "max Premium price (buys nothing above)"
+            bits.append(f"{role}: {format_display_equation(line)}")
+        for cap in household.get("caps") or []:
+            name = "Regular" if cap["cap_axis"] == "R" else "Premium"
+            bits.append(f"max {name} price: {format_display_equation(cap)} ({cap['method']})")
+        st.markdown(f"- **{household['label']}:** " + "; ".join(bits) + ".")
+    uses_caps = bool(getattr(price_optimisation, "USE_RESERVATION_CAPS", False))
+    st.markdown(
+        "A household buys Premium on the Premium side of its switching line and on or under its max Premium price, "
+        "Regular on the Regular side and on or under its max Regular price, and nothing otherwise (the shaded areas on the household chart). "
+        + (
+            "The programme uses these max-price lines as constraints. A price pair exactly on a line gets the Premium (or still-buying) side, "
+            "so the other side is kept one cent clear of the line."
+            if uses_caps
+            else "The programme does not use the max-price lines; they are drawn for reference."
+        )
+    )
+
     st.markdown("#### The linear programme")
     st.markdown(
         f"Each way of assigning a product to the households is its own linear programme. "
@@ -866,7 +907,7 @@ def render_methodology(detail: dict, ols_detail: dict) -> None:
     )
     c_r, c_p = float(shared["c"][0]), float(shared["c"][1])
     st.latex(rf"\max \quad {c_r:.4f}\, R + {c_p:.4f}\, P")
-    st.markdown("Subject to the chosen side of each household's line, and to the price box. The upper bounds are the highest prices in the sample. Prices also stay non-negative.")
+    st.markdown("Subject to the chosen side of each household's lines (switching or stop line, and its max price for the product it buys), and to the price box. The upper bounds are the highest prices in the sample. Prices also stay non-negative.")
     st.latex(rf"{bounds['R_lower']:.0f} \le R \le {bounds['R_upper']:.4f}, \qquad {bounds['P_lower']:.0f} \le P \le {bounds['P_upper']:.4f}")
     for name in shared["constraint_names"]:
         if name.startswith("R ") or name.startswith("P "):

@@ -20,6 +20,8 @@ from __future__ import annotations
 from html import escape
 from pathlib import Path
 
+import itertools
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -34,6 +36,8 @@ FORMULATION_SUMMARY = """
 Decision variables are the Regular price R and the Premium price P, both non-negative.
 
 Each household buys a fixed quantity of one product (the average units bought on weeks they chose that product). Revenue is therefore linear: quantity times the price of the product they buy.
+
+Each household also has a max Regular price line and a max Premium price line (reservation prices), estimated from the weeks it did and did not buy each product; the programme keeps a household that buys a product on or under that product's line.
 
 The product is not a decision variable inside one programme. Each household is a straight line in the R-P plane. Household 1 and Household 3 are fitted by OLS (a linear probability model at the 0.5 contour). Household 2's line is the horizontal threshold P = 77.5, because the OLS fit misclassified week 6 (R = 55, P = 80). One side of the line is Premium, the other is Regular, and a household that sometimes buys nothing also has a stop-buying line. Each assignment of products to households is its own linear programme. The assignment with the highest feasible revenue is the shared menu.
 
@@ -54,6 +58,11 @@ _TOL = 1e-7
 # Premium at or below this Premium price, Regular at or above it.
 # Midpoint of the gap between HH2's highest Premium week (75) and lowest Regular week (80).
 HH2_SWITCH_THRESHOLD = 77.5
+# The linear programme also enforces each household's max Regular / max Premium price line.
+# Set to False to go back to the switching (and stop) lines only.
+USE_RESERVATION_CAPS = True
+# Price distance (EUR) kept from a line on its strict side (Regular, or buying nothing).
+STRICT_MARGIN = 0.01
 
 
 def discover_households(frame: pd.DataFrame) -> list[str]:
@@ -132,7 +141,10 @@ def _halfspace(line: dict, side: str) -> tuple[np.ndarray, float]:
     if side == "high":
         return np.array([-b_r, -b_p], dtype=float), intercept - 0.5
     if side == "low":
-        return np.array([b_r, b_p], dtype=float), 0.5 - intercept
+        # The low side (Regular, or buying nothing) is strict: a price pair exactly on the
+        # line gets the high-side product. Keep the programme one cent clear of the line.
+        scale = abs(b_p) if abs(b_p) > 1e-12 else abs(b_r)
+        return np.array([b_r, b_p], dtype=float), 0.5 - intercept - STRICT_MARGIN * scale
     raise ValueError(side)
 
 
@@ -312,6 +324,8 @@ def inequality_text(line: dict, side: str) -> str:
     icept = (0.5 - intercept) / b_p
     wants_below = (side == "high" and b_p < 0) or (side == "low" and b_p > 0)
     op = "<=" if wants_below else ">="
+    if abs(b_r) < 1e-12:
+        return f"P {op} {icept:.4f}"
     sign = "+" if icept >= 0 else "−"
     return f"P {op} {slope:.4f} R {sign} {abs(icept):.4f}"
 
@@ -337,6 +351,93 @@ def _ols_lines(label: str, prices: np.ndarray, bought_reg: np.ndarray, bought_pr
             switch["equation"] = line_equation(switch)
         lines.append(switch)
     return lines
+
+
+def cap_line(axis: str, level: float, *, in_lp: bool = True, method: str = "") -> dict:
+    """Max-price (reservation) line: R = level for Regular, P = level for Premium.
+
+    Written like every other line, score = intercept + b_R R + b_P P, so the side
+    where the household still buys that product is score >= 0.5 (R <= level or P <= level).
+    """
+    if axis not in ("R", "P"):
+        raise ValueError(axis)
+    line = {
+        "intercept": float(level) + 0.5,
+        "b_R": -1.0 if axis == "R" else 0.0,
+        "b_P": -1.0 if axis == "P" else 0.0,
+        "r_squared": float("nan"),
+        "kind": "cap_regular" if axis == "R" else "cap_premium",
+        "cap_axis": axis,
+        "cap_level": float(level),
+        "in_lp": bool(in_lp),
+        "method": method,
+    }
+    line["equation"] = line_equation(line)
+    return line
+
+
+def _midpoint_cap(prices: np.ndarray, bought: np.ndarray) -> tuple[float, float, float] | None:
+    """Midpoint between the highest price at which the product was bought and the next
+    higher tested price at which it was not bought (switched or bought nothing)."""
+    if not bought.any():
+        return None
+    top = float(prices[bought].max())
+    above = prices[(~bought) & (prices > top + 1e-9)]
+    if above.size == 0:
+        return None
+    nxt = float(above.min())
+    return (top + nxt) / 2.0, top, nxt
+
+
+def reservation_caps(frame: pd.DataFrame, prefix: str, lines: list[dict]) -> list[dict]:
+    """Max Regular and max Premium price lines for one household, estimated from the table.
+
+    * A household that sometimes buys nothing already has a stop line, fitted the same way
+      as the switching line (OLS 0/1 bought / not bought at 0.5, or the given line). That
+      line is its max price for the product it buys, so no second Premium cap is added.
+    * Otherwise a 0/1 OLS on "bought Regular" (or "bought Premium") is the switching line
+      again, because every week is one or the other. The cap is then the midpoint between
+      the highest price at which it bought that product and the next higher tested price
+      at which it did not.
+    * A household that never buys Regular gets an R line at the lowest tested Regular price:
+      its Regular reservation price is below that. It is drawn, not used in the programme.
+    """
+    regular = frame["P_Regular"].to_numpy(dtype=float)
+    premium = frame["P_Premium"].to_numpy(dtype=float)
+    bought_reg = frame[f"{prefix}_Regular"].to_numpy(dtype=float) > 0
+    bought_prem = frame[f"{prefix}_Premium"].to_numpy(dtype=float) > 0
+    kinds = {line["kind"] for line in lines}
+    caps = []
+    if not bought_reg.any():
+        lowest = float(regular.min())
+        caps.append(cap_line(
+            "R", lowest, in_lp=False,
+            method=f"never bought Regular, even at the lowest tested Regular price R = {lowest:.0f}; its Regular reservation price is below that",
+        ))
+    else:
+        found = _midpoint_cap(regular, bought_reg)
+        if found is not None:
+            level, top, nxt = found
+            caps.append(cap_line(
+                "R", level,
+                method=f"bought Regular up to R = {top:.0f}, not at R = {nxt:.0f}; midpoint {level:.2f}",
+            ))
+    if bought_prem.any() and "stop" not in kinds:
+        found = _midpoint_cap(premium, bought_prem)
+        if found is not None:
+            level, top, nxt = found
+            caps.append(cap_line(
+                "P", level,
+                method=f"bought Premium up to P = {top:.0f}, not at P = {nxt:.0f}; midpoint {level:.2f}",
+            ))
+    return caps
+
+
+def active_caps(household: dict) -> list[dict]:
+    """Cap lines the programme enforces."""
+    if not USE_RESERVATION_CAPS:
+        return []
+    return [line for line in household.get("caps") or [] if line.get("in_lp")]
 
 
 def _classmate_lines(label: str) -> list[dict]:
@@ -391,6 +492,7 @@ def load_problem(csv_path: str = DEFAULT_CSV, line_source: str = "ols") -> dict:
                 "label": label,
                 "prefix": prefix,
                 "lines": lines,
+                "caps": reservation_caps(frame, prefix, lines),
                 "d_regular": d_regular,
                 "d_premium": d_premium,
                 "n_regular": int(bought_reg.sum()),
@@ -415,6 +517,8 @@ def product_choices(household: dict) -> list[str]:
         choices.append("None")
     if household["only_product"] == "Premium" and "Regular" in choices and "switch" not in kinds:
         choices = [c for c in choices if c != "Regular"]
+    if "None" not in choices and _side_options_none(household):
+        choices.append("None")
     return choices
 
 
@@ -434,6 +538,51 @@ def _sides_for(household: dict, product: str) -> list[tuple[dict, str]]:
     elif product == "Regular" and household["only_product"] == "Premium":
         raise ValueError(f"{household['label']} never buys Regular")
     return sides
+
+
+def _side_options_none(household: dict) -> list[list[tuple[dict, str]]]:
+    """Ways to buy nothing: the stop line, or the product's side but above its max price."""
+    kinds = {line["kind"]: line for line in household["lines"]}
+    options = []
+    if "stop" in kinds:
+        options.append([(kinds["stop"], "low")])
+    for cap in active_caps(household):
+        product = "Regular" if cap["cap_axis"] == "R" else "Premium"
+        sides = []
+        if "stop" in kinds:
+            sides.append((kinds["stop"], "high"))
+        if "switch" in kinds:
+            sides.append((kinds["switch"], "high" if product == "Premium" else "low"))
+        elif product == "Regular":
+            continue
+        sides.append((cap, "low"))
+        options.append(sides)
+    return options
+
+
+def side_options(household: dict, product: str) -> list[list[tuple[dict, str]]]:
+    """Alternative sets of half-spaces for one product. Buying nothing can be a union
+    of regions, so it can have more than one set; each is its own programme."""
+    if product == "None":
+        options = _side_options_none(household)
+        if not options:
+            raise ValueError(f"{household['label']} has no way to buy nothing")
+        return options
+    sides = _sides_for(household, product)
+    axis = "R" if product == "Regular" else "P"
+    sides += [(cap, "high") for cap in active_caps(household) if cap["cap_axis"] == axis]
+    return [sides]
+
+
+def _constraint_name(household: dict, line: dict, side: str, product: str) -> str:
+    if line["kind"] in ("cap_regular", "cap_premium"):
+        name = "Regular" if line["kind"] == "cap_regular" else "Premium"
+        kind = f"stays under its max {name} price so that" if side == "high" else f"is priced out of {name} so that"
+    else:
+        kind = "switches so that" if line["kind"] == "switch" else "keeps buying so that"
+        if product == "None" and line["kind"] == "stop" and side == "low":
+            kind = "stops buying so that"
+    return f"{household['label']} {kind} {inequality_text(line, side)}"
 
 
 def price_box_rows(bounds: dict) -> tuple[np.ndarray, np.ndarray, list[str]]:
@@ -463,21 +612,25 @@ def price_box_rows(bounds: dict) -> tuple[np.ndarray, np.ndarray, list[str]]:
     return rows, rhs, names
 
 
-def build_constraint_system(households: list[dict], assignment: dict[str, str], bounds: dict) -> dict:
-    """Stack behavioural half-spaces and the price box into A_ub x <= b_ub."""
+def build_constraint_system(
+    households: list[dict], assignment: dict[str, str], bounds: dict, choice: dict[str, int] | None = None
+) -> dict:
+    """Stack behavioural half-spaces and the price box into A_ub x <= b_ub.
+
+    `choice` picks one of `side_options` per household (only buying nothing has more than one).
+    """
     rows = []
     rhs = []
     names = []
     for household in households:
         product = assignment[household["label"]]
-        for line, side in _sides_for(household, product):
+        options = side_options(household, product)
+        index = (choice or {}).get(household["label"], 0)
+        for line, side in options[index]:
             coeff, limit = _halfspace(line, side)
             rows.append(coeff)
             rhs.append(limit)
-            kind = "switches so that" if line["kind"] == "switch" else "keeps buying so that"
-            if product == "None":
-                kind = "stops buying so that"
-            names.append(f"{household['label']} {kind} {inequality_text(line, side)}")
+            names.append(_constraint_name(household, line, side, product))
     box_rows, box_rhs, box_names = price_box_rows(bounds)
     if rows:
         matrix = np.vstack([np.vstack(rows), box_rows])
@@ -563,8 +716,7 @@ def _prefer_matching_vertex(
             for household in households
         )
 
-    if matches(point):
-        return point
+    # On a flat optimal edge report the same vertex every time: highest P, then highest R.
     candidates = [vertex for vertex in vertices if abs(float(coeff @ vertex) - revenue) <= 1e-4 and matches(vertex)]
     if not candidates:
         return point
@@ -572,8 +724,23 @@ def _prefer_matching_vertex(
 
 
 def solve_assignment(households: list[dict], assignment: dict[str, str], bounds: dict) -> dict:
-    """One linear programme: this product assignment, maximised with linprog."""
-    system = build_constraint_system(households, assignment, bounds)
+    """This product assignment, maximised with linprog.
+
+    If buying nothing can happen in more than one region, each combination is its own
+    programme and the best feasible one is kept.
+    """
+    counts = [len(side_options(household, assignment[household["label"]])) for household in households]
+    best = None
+    for combo in itertools.product(*[range(n) for n in counts]):
+        choice = {household["label"]: index for household, index in zip(households, combo)}
+        solved = _solve_programme(households, assignment, bounds, choice)
+        if best is None or (solved["feasible"] and (not best["feasible"] or solved["revenue"] > best["revenue"] + 1e-9)):
+            best = solved
+    return best
+
+
+def _solve_programme(households: list[dict], assignment: dict[str, str], bounds: dict, choice: dict[str, int]) -> dict:
+    system = build_constraint_system(households, assignment, bounds, choice)
     coeff = objective_coefficients(households, assignment)
     # linprog minimises. Negating the quantity vector maximises revenue.
     result = linprog(
@@ -612,6 +779,25 @@ def solve_assignment(households: list[dict], assignment: dict[str, str], bounds:
     vertices = _vertices_from_constraints(system["A_ub"], system["b_ub"])
     point = _prefer_matching_vertex(households, assignment, coeff, point, revenue, vertices)
     revenue = float(coeff @ point)
+    if not all(
+        predict_product(household, float(point[0]), float(point[1])) == assignment[household["label"]]
+        for household in households
+    ):
+        # Only a boundary point satisfies these closed half-spaces, and there the lines
+        # give at least one household a different product. The assignment is not attainable.
+        solved.update(
+            {
+                "R": float("nan"),
+                "P": float("nan"),
+                "revenue": float("-inf"),
+                "vertex": False,
+                "tight": [],
+                "satisfied": False,
+                "feasible": False,
+                "status_name": "feasible only on a boundary where the lines assign a different product",
+            }
+        )
+        return solved
     tight_idx = _tight_constraints(system["A_ub"], system["b_ub"], point)
     solved.update(
         {
@@ -666,8 +852,14 @@ def predict_product(household: dict, regular: float, premium: float) -> str:
     if "stop" in kinds and _score(kinds["stop"], regular, premium) < 0.5 - 1e-9:
         return "None"
     if "switch" in kinds:
-        return "Premium" if _score(kinds["switch"], regular, premium) >= 0.5 - 1e-9 else "Regular"
-    return household.get("only_product") or "Premium"
+        product = "Premium" if _score(kinds["switch"], regular, premium) >= 0.5 - 1e-9 else "Regular"
+    else:
+        product = household.get("only_product") or "Premium"
+    axis = "R" if product == "Regular" else "P"
+    for cap in active_caps(household):
+        if cap["cap_axis"] == axis and _score(cap, regular, premium) < 0.5 - 1e-9:
+            return "None"
+    return product
 
 
 def revenue_of(household: dict, regular: float, premium: float) -> dict:
@@ -734,6 +926,10 @@ def household_equations(household: dict) -> list[str]:
         else:
             role = "stops buying above"
         text.append(f"{role} {line['equation']}")
+    for cap in household.get("caps") or []:
+        name = "Regular" if cap["cap_axis"] == "R" else "Premium"
+        used = "" if cap.get("in_lp") and USE_RESERVATION_CAPS else " (drawn only, not in the programme)"
+        text.append(f"max {name} price {cap['equation']}{used}: {cap['method']}")
     text.append(
         f"d_regular = {household['d_regular']:.4f} (n = {household['n_regular']}), "
         f"d_premium = {household['d_premium']:.4f} (n = {household['n_premium']})"
@@ -1246,6 +1442,22 @@ def _price_figure(detail: dict, solved: dict, households: list[dict], frame: pd.
     fig = go.Figure()
     _shade(fig, solved)
     _add_household_lines(fig, households, (x_range[0], x_range[1]))
+    if frame is None:
+        for household in households:
+            for cap in household.get("caps") or []:
+                if not cap.get("in_lp"):
+                    continue
+                ends = _full_line(cap, x_range, y_range)
+                if ends is None:
+                    continue
+                style = _line_style(household, cap)
+                style.update(width=1.6, dash="dot")
+                fig.add_trace(go.Scatter(
+                    x=ends[0], y=ends[1], mode="lines",
+                    name=f"{household['label']}: {_line_role(household, cap)}: {format_display_equation(cap)}",
+                    line=style,
+                    hovertemplate=f"{_line_role(household, cap)}<br>{format_display_equation(cap)}<extra>{household['label']}</extra>",
+                ))
     if frame is not None and len(households) == 1:
         _add_observations(fig, frame, households[0])
     _objective_level(fig, solved, x_range, y_range)
@@ -1261,8 +1473,166 @@ def shared_figure(detail: dict) -> go.Figure:
     return _price_figure(detail, detail["shared"]["best"], detail["households"])
 
 
+_PRODUCT_FILL = {
+    "Regular": "rgba(22,119,255,0.13)",
+    "Premium": "rgba(255,138,31,0.16)",
+}
+_PRODUCT_INK = {"Regular": "#0b4fb3", "Premium": "#b85400", "No purchase": "#667085"}
+_PRODUCT_SYMBOL = {"Regular": "square", "Premium": "diamond", "No purchase": "x"}
+
+
+def _clip_polygon(polygon: list[tuple[float, float]], a: np.ndarray, b: float) -> list[tuple[float, float]]:
+    """Sutherland–Hodgman: keep the part of `polygon` where a · (R, P) <= b."""
+    out: list[tuple[float, float]] = []
+    if not polygon:
+        return out
+    for index, current in enumerate(polygon):
+        previous = polygon[index - 1]
+        cur_in = float(a @ np.array(current)) <= b + 1e-9
+        prev_in = float(a @ np.array(previous)) <= b + 1e-9
+        if cur_in != prev_in:
+            d_prev = float(a @ np.array(previous)) - b
+            d_cur = float(a @ np.array(current)) - b
+            t = d_prev / (d_prev - d_cur)
+            out.append((previous[0] + t * (current[0] - previous[0]), previous[1] + t * (current[1] - previous[1])))
+        if cur_in:
+            out.append(current)
+    return out
+
+
+def product_region(household: dict, product: str, x_range: list[float], y_range: list[float]) -> list[tuple[float, float]]:
+    """Polygon (inside the plot window) where the household's lines give `product`.
+
+    Drawn for every line of that product, caps included, whether or not the programme uses them.
+    """
+    kinds = {line["kind"]: line for line in household["lines"]}
+    sides: list[tuple[dict, str]] = []
+    if "stop" in kinds:
+        sides.append((kinds["stop"], "high"))
+    if "switch" in kinds:
+        sides.append((kinds["switch"], "high" if product == "Premium" else "low"))
+    elif product == "Regular" and household.get("only_product") == "Premium":
+        return []
+    axis = "R" if product == "Regular" else "P"
+    sides += [(cap, "high") for cap in household.get("caps") or [] if cap["cap_axis"] == axis and cap.get("in_lp")]
+    polygon = [(x_range[0], y_range[0]), (x_range[1], y_range[0]), (x_range[1], y_range[1]), (x_range[0], y_range[1])]
+    for line, side in sides:
+        intercept, b_r, b_p = line["intercept"], line["b_R"], line["b_P"]
+        if side == "high":
+            a, b = np.array([-b_r, -b_p]), intercept - 0.5
+        else:
+            a, b = np.array([b_r, b_p]), 0.5 - intercept
+        polygon = _clip_polygon(polygon, a, b)
+    return polygon
+
+
+def _line_role(household: dict, line: dict) -> str:
+    kind = line["kind"]
+    if kind == "switch":
+        return "Premium vs Regular"
+    if kind == "stop":
+        return "Max Premium price (buys nothing above)"
+    if kind == "cap_regular":
+        return "Max Regular price" if line.get("in_lp") else "Max Regular price below this (never bought Regular)"
+    return "Max Premium price"
+
+
+def _line_style(household: dict, line: dict) -> dict:
+    kind = line["kind"]
+    if kind == "switch":
+        return dict(color=LINE_COLOR.get(household["label"], "#172033"), dash="solid", width=2.6)
+    if kind == "cap_regular":
+        return dict(color=_PRODUCT_INK["Regular"], dash="dash", width=2.2)
+    return dict(color=_PRODUCT_INK["Premium"], dash="dash" if kind == "cap_premium" else "longdashdot", width=2.2)
+
+
+def _full_line(line: dict, x_range: list[float], y_range: list[float]) -> tuple[list[float], list[float]] | None:
+    """End points of the whole line across the plot window (no price-box clipping)."""
+    b_r, b_p, intercept = line["b_R"], line["b_P"], line["intercept"]
+    if abs(b_p) > 1e-12:
+        slope = -b_r / b_p
+        icept = (0.5 - intercept) / b_p
+        return [x_range[0], x_range[1]], [slope * x_range[0] + icept, slope * x_range[1] + icept]
+    if abs(b_r) > 1e-12:
+        level = (0.5 - intercept) / b_r
+        return [level, level], [y_range[0], y_range[1]]
+    return None
+
+
+def _label_point(xs: list[float], ys: list[float], x_range: list[float], y_range: list[float], slot: int) -> tuple[float, float] | None:
+    """A point on the segment that is inside the window, staggered by `slot` so labels do not collide."""
+    fractions = (0.93, 0.80, 0.67, 0.54, 0.41)
+    order = fractions[slot % len(fractions):] + fractions[: slot % len(fractions)]
+    for f in order:
+        x = xs[0] + f * (xs[1] - xs[0])
+        y = ys[0] + f * (ys[1] - ys[0])
+        if x_range[0] < x < x_range[1] and y_range[0] + 2 < y < y_range[1] - 2:
+            return x, y
+    return None
+
+
+def _add_constraint_lines(
+    fig: go.Figure, household: dict, x_range: list[float], y_range: list[float], *, annotate: bool = True, slot0: int = 0
+) -> int:
+    """Switching / stop line and both max-price lines, each full length and labelled with its equation."""
+    slot = slot0
+    for line in list(household["lines"]) + list(household.get("caps") or []):
+        ends = _full_line(line, x_range, y_range)
+        if ends is None:
+            continue
+        xs, ys = ends
+        equation = format_display_equation(line)
+        role = _line_role(household, line)
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="lines",
+                name=f"{household['label'] if not annotate else ''}{': ' if not annotate else ''}{role}: {equation}",
+                line=_line_style(household, line),
+                hovertemplate=f"{role}<br>{equation}<extra>{household['label']}</extra>",
+            )
+        )
+        if annotate:
+            where = _label_point(xs, ys, x_range, y_range, slot)
+            if where is not None:
+                fig.add_annotation(
+                    x=where[0],
+                    y=where[1],
+                    text=equation,
+                    showarrow=False,
+                    xanchor="left" if abs(xs[1] - xs[0]) < 1e-9 else "center",
+                    yanchor="bottom",
+                    xshift=4 if abs(xs[1] - xs[0]) < 1e-9 else 0,
+                    yshift=3,
+                    bgcolor="rgba(255,255,255,0.85)",
+                    font=dict(family=_CHART_FONT, size=11, color=_line_style(household, line)["color"]),
+                )
+        slot += 1
+    return slot
+
+
+def _add_product_regions(fig: go.Figure, household: dict, x_range: list[float], y_range: list[float]) -> None:
+    for product in ("Regular", "Premium"):
+        polygon = product_region(household, product, x_range, y_range)
+        if len(polygon) < 3:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=[pt[0] for pt in polygon] + [polygon[0][0]],
+                y=[pt[1] for pt in polygon] + [polygon[0][1]],
+                fill="toself",
+                mode="lines",
+                name=f"Buys {product}",
+                line=dict(width=0),
+                fillcolor=_PRODUCT_FILL[product],
+                hoverinfo="skip",
+            )
+        )
+
+
 def _add_observations(fig: go.Figure, frame: pd.DataFrame, household: dict) -> None:
-    """Weekly choices for one household: blue Regular, orange Premium."""
+    """Every week at its exact (R, P), marked with what this household bought that week."""
     prefix = household["prefix"]
     regular_price = frame["P_Regular"].to_numpy(dtype=float)
     premium_price = frame["P_Premium"].to_numpy(dtype=float)
@@ -1271,8 +1641,7 @@ def _add_observations(fig: go.Figure, frame: pd.DataFrame, household: dict) -> N
     weeks = frame["T"].to_numpy()
     choice = np.where(regular_qty > 0, "Regular", np.where(premium_qty > 0, "Premium", "No purchase"))
     quantity = np.where(regular_qty > 0, regular_qty, premium_qty)
-    colors = {"Regular": "#1677ff", "Premium": "#ff8a1f", "No purchase": "#98a2b3"}
-    for name, color in colors.items():
+    for name in ("Regular", "Premium", "No purchase"):
         mask = choice == name
         if not np.any(mask):
             continue
@@ -1280,9 +1649,17 @@ def _add_observations(fig: go.Figure, frame: pd.DataFrame, household: dict) -> N
             go.Scatter(
                 x=regular_price[mask],
                 y=premium_price[mask],
-                mode="markers",
-                name=f"Observed {name}",
-                marker=dict(size=11, color=color, line=dict(color="white", width=1.4)),
+                mode="markers+text",
+                name=f"Week bought {name}" if name != "No purchase" else "Week bought nothing",
+                text=[f"W{int(week)}" for week in weeks[mask]],
+                textposition="top center",
+                textfont=dict(family=_CHART_FONT, size=10, color=_PRODUCT_INK[name]),
+                marker=dict(
+                    size=11,
+                    color=_PRODUCT_INK[name],
+                    symbol=_PRODUCT_SYMBOL[name],
+                    line=dict(color="white", width=1.2),
+                ),
                 customdata=np.column_stack([weeks[mask], quantity[mask]]),
                 hovertemplate=(
                     "Week %{customdata[0]:.0f}<br>R=%{x:.0f}<br>P=%{y:.0f}"
@@ -1293,9 +1670,25 @@ def _add_observations(fig: go.Figure, frame: pd.DataFrame, household: dict) -> N
 
 
 def household_figure(detail: dict, label: str) -> go.Figure:
-    """One household: its line, observed weeks, feasible region, and optimum."""
+    """One household: switching line and both max-price lines at full length, the region where
+    each product is bought, every observed week, and the household's own optimum."""
     item = next(entry for entry in detail["per_household"] if entry["household"]["label"] == label)
-    return _price_figure(detail, item["programme"]["best"], [item["household"]], frame=detail["frame"])
+    household = item["household"]
+    solved = item["programme"]["best"]
+    bounds = detail["bounds"]
+    x_range = [bounds["R_lower"] - 4.0, bounds["R_upper"] + 12.0]
+    y_range = [bounds["P_lower"] - 4.0, bounds["P_upper"] + 14.0]
+    fig = go.Figure()
+    _add_product_regions(fig, household, x_range, y_range)
+    _add_constraint_lines(fig, household, x_range, y_range)
+    _add_observations(fig, detail["frame"], household)
+    _objective_level(fig, solved, x_range, y_range)
+    fig.update_xaxes(range=list(x_range))
+    fig.update_yaxes(range=list(y_range))
+    _optimum_marker(fig, solved, x_range, y_range)
+    _price_axes(fig, bounds, x_range, y_range, height=660)
+    fig.update_layout(margin_b=150)
+    return fig
 
 
 def _shock_tick(parameter: str, shock: str) -> str:
@@ -1635,6 +2028,32 @@ def constraint_table(solved: dict, households: list[dict]) -> pd.DataFrame:
                     "Role": role,
                     "Binding": binding,
                     "In-sample accuracy": accuracy,
+                })
+        for cap in household.get("caps") or []:
+            product = "Regular" if cap["cap_axis"] == "R" else "Premium"
+            if not (cap.get("in_lp") and USE_RESERVATION_CAPS):
+                rows.append({
+                    "Piece": household["label"],
+                    "Constraint": f"{cap['cap_axis']} = {cap['cap_level']:.4f}",
+                    "Role": f"max {product} price (below this; drawn only)",
+                    "Binding": "not in this programme",
+                    "In-sample accuracy": "",
+                })
+                continue
+            for role, side in ((f"under max {product} price", "high"), (f"priced out of {product}", "low")):
+                full = _constraint_name(household, cap, side, product)
+                if full in tight:
+                    binding = "yes"
+                elif full in active:
+                    binding = "no"
+                else:
+                    binding = "not in this programme"
+                rows.append({
+                    "Piece": household["label"],
+                    "Constraint": inequality_text(cap, side),
+                    "Role": role,
+                    "Binding": binding,
+                    "In-sample accuracy": "",
                 })
     for name in solved["constraint_names"]:
         if name.startswith("R ") or name.startswith("P "):

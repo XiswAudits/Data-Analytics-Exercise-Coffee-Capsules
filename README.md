@@ -77,6 +77,12 @@ Each household is also solved alone, on its own line and its own quantity:
 
 Household 2's revenue does not depend on `P` once they are kept on the Regular side, so every feasible Premium price on that edge earns €260. HiGHS returns the vertex `P = 100`.
 
+### Max-price (reservation) lines
+
+Each household also has a max Regular price and a max Premium price line, drawn at full length on the household chart with the switching line. For Households 1 and 2 (never buy nothing) a 0/1 OLS on "bought Regular" or "bought Premium" reproduces the switching line, so each cap is the midpoint between the highest price at which they bought that product and the next higher tested price at which they did not: **R = 60** (bought Regular up to 55, not at 65) and **P = 77.5** (bought Premium up to 75, not at 80). Household 3 sometimes buys nothing, so its bought / not-bought line is its max Premium price; it never bought Regular, even at R = 35, so its Regular reservation price is below 35 (drawn only).
+
+With `USE_RESERVATION_CAPS = True` (in `price_optimisation.py`) the programme enforces these caps, and the strict side of every line (Regular, or buying nothing) is kept one cent clear of it. The OLS optimum becomes **R = €65.00, P = €77.50, revenue = €874.64** (all three households buy Premium); the given-lines page becomes **R = €59.93, P = €77.50, revenue = €881.85** (Household 2 buys Regular). The figures above are the switching-lines-only model (`USE_RESERVATION_CAPS = False`).
+
 `python price_optimisation.py` checks that each reported optimum is a vertex, satisfies `A_ub x <= b_ub`, and that revenue equals `c · x`.
 
 The page opens on **Revenue-maximising prices**. A **Model & methodology** section at the bottom explains the data, the fixed quantities, the lines, the linear programme, the result, the checks, and the limitations. KPI cards show the shared optimum. A household control switches between all households and one household: all households draw every line and the shared feasible region; one household draws its line, the observed weeks, and its own optimum. The constraints table lists the objective, both sides of each line, the price bounds, whether each row binds, and in-sample accuracy. Average weekly demand is the fixed quantity `d_i`. Sensitivity re-solves the shared LP after a ±10% shock to each OLS line coefficient and to Household 2's threshold, and moves each household's own prices by ±10%. The regret matrix includes the shared optimum, each household optimum, and the scenario prices.
